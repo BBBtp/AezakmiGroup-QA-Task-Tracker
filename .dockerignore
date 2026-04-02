@@ -1,0 +1,13 @@
+.git
+.gitignore
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+bot.db
+miniapp/node_modules
+miniapp/dist
+telegram_task_parser_bot.egg-info

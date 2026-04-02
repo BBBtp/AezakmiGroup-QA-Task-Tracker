@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 3%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 98%;
+    --primary: 49 100% 50%;
+    --primary-foreground: 0 0% 6%;
+    --secondary: 0 0% 11%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 11%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 49 100% 50%;
+    --accent-foreground: 0 0% 6%;
+    --destructive: 0 77% 56%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 18%;
+    --input: 0 0% 14%;
+    --ring: 49 100% 50%;
+    --radius: 1.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    background-image:
+      radial-gradient(circle at top left, rgba(255, 212, 0, 0.18), transparent 28%),
+      radial-gradient(circle at 85% 10%, rgba(255, 255, 255, 0.08), transparent 18%),
+      linear-gradient(180deg, #0a0a0a 0%, #030303 100%);
+  }
+
+  a {
+    @apply text-primary;
+  }
+}
+
+@layer components {
+  .history-day-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .history-day-chevron {
+    transition: transform 220ms ease;
+  }
+
+  .history-day[open] .history-day-chevron {
+    transform: rotate(180deg);
+  }
+
+  .history-day-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition:
+      grid-template-rows 240ms ease,
+      opacity 180ms ease;
+  }
+
+  .history-day[open] .history-day-content {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+
+  .history-day-content-inner {
+    overflow: hidden;
+  }
+}

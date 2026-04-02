@@ -1,0 +1,122 @@
+Metadata-Version: 2.4
+Name: telegram-task-parser-bot
+Version: 0.1.0
+Summary: Telegram bot for extracting and tracking tasks from unstructured chat messages.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: aiogram<4.0.0,>=3.4.1
+Requires-Dist: SQLAlchemy<3.0.0,>=2.0.29
+Requires-Dist: python-dotenv<2.0.0,>=1.0.1
+Requires-Dist: aiohttp-socks<1.0.0,>=0.11.0
+Requires-Dist: psycopg[binary]<4.0.0,>=3.2.0
+
+# Telegram Task Parser Bot
+
+Production-ready Telegram bot for tracking tasks in noisy group chats.
+
+## Features
+
+- Parses unstructured Russian/English chat messages into tasks
+- Detects task creation, updates, and completion
+- Stores tasks and task events in PostgreSQL via SQLAlchemy ORM
+- Stores parsed metadata: Figma, GitHub/archive link, branch, file path, line number, app name
+- Supports commands: `/my`, `/open`, `/report`, `/done`, `/app`
+- Avoids duplicate tasks by canonical task key
+- Assigns the performer from a tester reaction on the source task message
+
+## Stack
+
+- Python 3.11+
+- aiogram v3
+- SQLAlchemy ORM
+- PostgreSQL
+- python-dotenv
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp .env.example .env
+```
+
+Set `BOT_TOKEN` in `.env`, then run:
+
+```bash
+python -m bot.app
+```
+
+After startup:
+
+- Bot polling is started
+- Local mini app is served by the Python process
+- `/app` sends a button to open the task mini app
+- If `WEB_BASE_URL` is public `https://.../miniapp`, the bot also configures a Telegram menu button
+
+## Docker Compose
+
+For server deployment, the project includes:
+
+- [`Dockerfile`](/Users/bogdan/PycharmProjects/BotParser/Dockerfile) for the Python bot/API
+- [`Dockerfile.nginx`](/Users/bogdan/PycharmProjects/BotParser/Dockerfile.nginx) for the built mini app static files
+- [`docker-compose.yml`](/Users/bogdan/PycharmProjects/BotParser/docker-compose.yml) for `app + nginx`
+- [`default.conf`](/Users/bogdan/PycharmProjects/BotParser/deploy/nginx/default.conf) for nginx routing
+
+Production Docker layout:
+
+- `app` runs the Telegram bot and API on `0.0.0.0:8080`
+- `nginx` serves `miniapp/dist`
+- `nginx` proxies `/api` and `/api/stream` to `app`
+
+Inside Docker the app listens on `0.0.0.0:8080`. This is normal and required so nginx can reach the container.
+
+Minimal `.env` for Docker:
+
+```env
+BOT_TOKEN=...
+TELEGRAM_PROXY_URL=socks5://login:password@host:port
+DATABASE_URL=postgresql+psycopg://task_tracker:task_tracker@postgres:5432/task_tracker
+WEB_BASE_URL=https://your-domain/miniapp
+BOT_TIMEZONE=Europe/Moscow
+REPORT_DEFAULT_DAYS=14
+```
+
+Run:
+
+```bash
+docker compose up -d --build
+```
+
+This setup exposes nginx on port `80`. PostgreSQL runs as a separate `postgres` service with a persistent Docker volume.
+
+This setup exposes nginx on port `80`. For a real Telegram Mini App you should place HTTPS in front of it, for example with:
+
+- your own nginx + certbot on the server
+- or a separate reverse proxy / load balancer that terminates TLS
+
+## Mini App
+
+Frontend source lives in `miniapp/` and uses React + Tailwind + shadcn-style UI components.
+
+Build it with:
+
+```bash
+cd miniapp
+npm install
+npm run build
+```
+
+For a real Telegram Mini App:
+
+- deploy the Python app so `/miniapp` is reachable over HTTPS
+- set `WEB_BASE_URL=https://your-domain/miniapp`
+- restart the bot so it can configure the menu button
+
+## Notes
+
+- The parser uses a multi-stage pipeline: entity extraction, task ID normalization, intent classification, confidence scoring.
+- Messages with confidence below `0.6` are not auto-created as tasks.
+- Archive names like `image_170.zip` are treated as the strongest task ID signal.
+- For usernames `glebcore`, `glebc0re`, and `bbbbbbtp`, the display name is normalized to `Арина`.
+- New tasks are created without a performer; the performer is assigned later from a tester reaction on the original task message.
