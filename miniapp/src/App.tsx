@@ -49,6 +49,9 @@ export default function App() {
   const desktopChatDropdownRef = useRef<HTMLDivElement | null>(null)
   const mobileChatDropdownRef = useRef<HTMLDivElement | null>(null)
   const selectedTaskIdRef = useRef<number | null>(null)
+  const tasksSnapshotRef = useRef("")
+  const chatsSnapshotRef = useRef("")
+  const selectedTaskSnapshotRef = useRef("")
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [taskActionLoading, setTaskActionLoading] = useState<"archive" | "restore" | "delete" | null>(null)
@@ -75,6 +78,18 @@ export default function App() {
   useEffect(() => {
     selectedTaskIdRef.current = selectedTaskId
   }, [selectedTaskId])
+
+  useEffect(() => {
+    tasksSnapshotRef.current = JSON.stringify(tasks)
+  }, [tasks])
+
+  useEffect(() => {
+    chatsSnapshotRef.current = JSON.stringify(chats)
+  }, [chats])
+
+  useEffect(() => {
+    selectedTaskSnapshotRef.current = selectedTask ? JSON.stringify(selectedTask) : ""
+  }, [selectedTask])
 
   useEffect(() => {
     if (authState !== "authorized") {
@@ -121,6 +136,27 @@ export default function App() {
       eventSource.close()
     }
   }, [archiveView, authState])
+
+  useEffect(() => {
+    if (authState !== "authorized") {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadTasks(false)
+      if (selectedTaskIdRef.current !== null) {
+        void loadTaskDetail(selectedTaskIdRef.current, false)
+      }
+      setLastLiveAt(new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }))
+      if (liveStatus !== "connected") {
+        setLastLiveEvent("poll_refresh")
+      }
+    }, 5000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [archiveView, authState, liveStatus])
 
   useEffect(() => {
     if (!chatDropdownOpen) {
@@ -243,8 +279,17 @@ export default function App() {
     }
     const tasksPayload = (await tasksResponse.json()) as { tasks: TaskSummary[] }
     const chatsPayload = (await chatsResponse.json()) as { chats: ChatSummary[] }
-    setTasks(tasksPayload.tasks)
-    setChats(chatsPayload.chats)
+
+    const nextTasksSnapshot = JSON.stringify(tasksPayload.tasks)
+    const nextChatsSnapshot = JSON.stringify(chatsPayload.chats)
+
+    if (tasksSnapshotRef.current !== nextTasksSnapshot) {
+      setTasks(tasksPayload.tasks)
+    }
+    if (chatsSnapshotRef.current !== nextChatsSnapshot) {
+      setChats(chatsPayload.chats)
+    }
+
     if (selectedTaskId !== null && !tasksPayload.tasks.some((task) => task.id === selectedTaskId)) {
       setSelectedTaskId(null)
       setSelectedTask(null)
@@ -272,7 +317,10 @@ export default function App() {
       return
     }
     const payload = (await response.json()) as TaskDetail
-    setSelectedTask(payload)
+    const nextTaskSnapshot = JSON.stringify(payload)
+    if (selectedTaskSnapshotRef.current !== nextTaskSnapshot) {
+      setSelectedTask(payload)
+    }
     if (showLoader) {
       setLoadingDetail(false)
     }
