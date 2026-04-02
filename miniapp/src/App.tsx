@@ -48,11 +48,15 @@ export default function App() {
   const [dateTo, setDateTo] = useState("")
   const desktopChatDropdownRef = useRef<HTMLDivElement | null>(null)
   const mobileChatDropdownRef = useRef<HTMLDivElement | null>(null)
+  const selectedTaskIdRef = useRef<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [taskActionLoading, setTaskActionLoading] = useState<"archive" | "restore" | "delete" | null>(null)
   const [authState, setAuthState] = useState<"checking" | "authorized" | "blocked">("checking")
   const [authError, setAuthError] = useState("")
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "connected" | "error">("connecting")
+  const [lastLiveEvent, setLastLiveEvent] = useState("—")
+  const [lastLiveAt, setLastLiveAt] = useState("—")
 
   useEffect(() => {
     const webApp = initTelegramWebApp()
@@ -69,6 +73,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    selectedTaskIdRef.current = selectedTaskId
+  }, [selectedTaskId])
+
+  useEffect(() => {
     if (authState !== "authorized") {
       return
     }
@@ -79,27 +87,40 @@ export default function App() {
     if (authState !== "authorized") {
       return
     }
+    setLiveStatus("connecting")
     const eventSource = new EventSource("/api/stream")
+
+    eventSource.onopen = () => {
+      setLiveStatus("connected")
+    }
 
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as { type?: string; task_id?: number }
+        setLastLiveEvent(payload.type ? `${payload.type}${payload.task_id ? ` #${payload.task_id}` : ""}` : event.data)
+        setLastLiveAt(new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }))
         void loadTasks(false)
-        if (selectedTaskId !== null && (!payload.task_id || payload.task_id === selectedTaskId)) {
-          void loadTaskDetail(selectedTaskId, false)
+        if (selectedTaskIdRef.current !== null && (!payload.task_id || payload.task_id === selectedTaskIdRef.current)) {
+          void loadTaskDetail(selectedTaskIdRef.current, false)
         }
       } catch {
+        setLastLiveEvent("raw_event")
+        setLastLiveAt(new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }))
         void loadTasks(false)
-        if (selectedTaskId !== null) {
-          void loadTaskDetail(selectedTaskId, false)
+        if (selectedTaskIdRef.current !== null) {
+          void loadTaskDetail(selectedTaskIdRef.current, false)
         }
       }
+    }
+
+    eventSource.onerror = () => {
+      setLiveStatus("error")
     }
 
     return () => {
       eventSource.close()
     }
-  }, [archiveView, authState, selectedTaskId])
+  }, [archiveView, authState])
 
   useEffect(() => {
     if (!chatDropdownOpen) {
@@ -377,6 +398,22 @@ export default function App() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,212,0,0.06)_0%,transparent_20%,transparent_100%)]" />
       <div className="relative mx-auto flex max-w-[1500px] flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4 md:px-6">
+        <Card className="border-primary/15 bg-black/70">
+          <CardContent className="flex flex-wrap items-center gap-4 px-4 py-3 text-xs text-zinc-300">
+            <div>
+              <span className="text-zinc-500">Live:</span>{" "}
+              <span className={liveStatus === "connected" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-300" : "text-amber-300"}>
+                {liveStatus === "connected" ? "connected" : liveStatus === "error" ? "error" : "connecting"}
+              </span>
+            </div>
+            <div>
+              <span className="text-zinc-500">Last event:</span> {lastLiveEvent}
+            </div>
+            <div>
+              <span className="text-zinc-500">Last refresh:</span> {lastLiveAt}
+            </div>
+          </CardContent>
+        </Card>
         <header className={`grid gap-3 ${archiveView ? "lg:grid-cols-1" : "lg:grid-cols-[1.4fr,0.8fr]"}`}>
           <Card className="overflow-hidden border-primary/20 bg-black/80">
             <CardContent className="flex flex-col gap-2 p-4 sm:p-5">

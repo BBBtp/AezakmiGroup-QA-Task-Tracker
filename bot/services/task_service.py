@@ -96,6 +96,20 @@ class TaskService:
         stmt = select(Task).where(Task.task_key == task_key)
         if not include_archived:
             stmt = stmt.where(self._active_task_clause())
+        stmt = stmt.order_by(desc(Task.created_at)).limit(1)
+        return session.scalar(stmt)
+
+    def find_open_task_by_key(self, session: Session, task_key: str) -> Task | None:
+        stmt = (
+            select(Task)
+            .where(
+                Task.task_key == task_key,
+                self._active_task_clause(),
+                Task.status != TaskStatus.DONE,
+            )
+            .order_by(desc(Task.created_at))
+            .limit(1)
+        )
         return session.scalar(stmt)
 
     def find_task_by_message(self, session: Session, chat_id: int, message_id: int) -> Task | None:
@@ -149,7 +163,7 @@ class TaskService:
                 return task
 
         if parse_result.resolved_task_id:
-            task = self.find_task_by_key(session, parse_result.resolved_task_id.canonical_task_key)
+            task = self.find_open_task_by_key(session, parse_result.resolved_task_id.canonical_task_key)
             if task:
                 return task
 
@@ -169,14 +183,8 @@ class TaskService:
             return TaskActionResult(action="ignored", message="Не удалось определить идентификатор задачи")
 
         task_key = parse_result.resolved_task_id.canonical_task_key
-        existing_task = self.find_task_by_key(session, task_key, include_archived=True)
+        existing_task = self.find_open_task_by_key(session, task_key)
         if existing_task:
-            if existing_task.is_archived:
-                return TaskActionResult(
-                    action="ignored",
-                    task=existing_task,
-                    message=f"Задача {existing_task.task_key} находится в архиве и не отслеживается",
-                )
             self.populate_task_metadata(existing_task, parse_result)
             self.add_event(
                 session,
@@ -420,7 +428,7 @@ class TaskService:
         return updated
 
     def manual_done(self, session: Session, task_key: str) -> TaskActionResult:
-        task = self.find_task_by_key(session, task_key.lower())
+        task = self.find_open_task_by_key(session, task_key.lower())
         return self.mark_done(session, task=task, message_text=f"Manual close via /done {task_key}")
 
     def archive_task(self, session: Session, task_id: int) -> TaskActionResult:

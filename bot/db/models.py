@@ -51,7 +51,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    task_key: Mapped[str] = mapped_column(String(128), index=True)
     task_number: Mapped[int] = mapped_column(Integer, index=True)
     task_family: Mapped[str] = mapped_column(String(64), index=True)
     app_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

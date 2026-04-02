@@ -42,6 +42,30 @@ def _ensure_sqlite_columns(engine) -> None:
                     connection.execute(text(ddl))
 
 
+def _ensure_postgres_task_key_non_unique(engine) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+
+    with engine.begin() as connection:
+        constraint_names = connection.execute(
+            text(
+                """
+                SELECT con.conname
+                FROM pg_constraint con
+                JOIN pg_class rel ON rel.oid = con.conrelid
+                JOIN pg_namespace nsp ON nsp.oid = con.connamespace
+                WHERE rel.relname = 'tasks'
+                  AND nsp.nspname = current_schema()
+                  AND con.contype = 'u'
+                  AND pg_get_constraintdef(con.oid) ILIKE '%(task_key)%'
+                """
+            )
+        ).scalars().all()
+
+        for constraint_name in constraint_names:
+            connection.execute(text(f'ALTER TABLE tasks DROP CONSTRAINT "{constraint_name}"'))
+
+
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, future=True, echo=False, connect_args=connect_args, pool_pre_ping=True)
@@ -53,4 +77,5 @@ def init_db(database_url: str) -> sessionmaker[Session]:
     engine = create_engine(database_url, future=True, echo=False, connect_args=connect_args, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     _ensure_sqlite_columns(engine)
+    _ensure_postgres_task_key_non_unique(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

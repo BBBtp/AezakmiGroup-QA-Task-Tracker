@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.types import Chat, ChatMemberUpdated, Message, MessageReactionUpdated, ReactionTypeEmoji
 from sqlalchemy.orm import sessionmaker
@@ -96,6 +98,16 @@ def create_messages_router(
                 reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
             )
             session.commit()
+
+        logging.info(
+            "TASK flow action=%s task_id=%s chat_id=%s message_id=%s intent=%s confidence=%.2f",
+            result.action,
+            result.task.id if result.task is not None else None,
+            message.chat.id,
+            message.message_id,
+            parse_result.classification.intent.value,
+            parse_result.classification.confidence,
+        )
 
         if result.task is not None and result.action in {"created", "updated", "done", "duplicate", "logged_reply"}:
             await broadcaster.publish({"type": "task_changed", "task_id": result.task.id})

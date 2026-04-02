@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ class LiveUpdateBroadcaster:
             self._queues.discard(queue)
 
     async def publish(self, payload: dict[str, object]) -> None:
+        logging.info("LIVE publish payload=%s subscribers=%s", payload, len(self._queues))
         if not self._queues:
             return
 
