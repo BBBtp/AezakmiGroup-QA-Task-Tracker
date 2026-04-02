@@ -65,6 +65,28 @@ def _ensure_postgres_task_key_non_unique(engine) -> None:
         for constraint_name in constraint_names:
             connection.execute(text(f'ALTER TABLE tasks DROP CONSTRAINT "{constraint_name}"'))
 
+        unique_index_names = connection.execute(
+            text(
+                """
+                SELECT idx.indexname
+                FROM pg_indexes idx
+                JOIN pg_class cls ON cls.relname = idx.tablename
+                JOIN pg_namespace nsp ON nsp.nspname = idx.schemaname
+                JOIN pg_class index_cls ON index_cls.relname = idx.indexname
+                JOIN pg_index index_meta ON index_meta.indexrelid = index_cls.oid
+                WHERE idx.schemaname = current_schema()
+                  AND idx.tablename = 'tasks'
+                  AND index_meta.indisunique = TRUE
+                  AND idx.indexdef ILIKE '%(task_key)%'
+                """
+            )
+        ).scalars().all()
+
+        for index_name in unique_index_names:
+            connection.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
+
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_task_key ON tasks (task_key)"))
+
 
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
