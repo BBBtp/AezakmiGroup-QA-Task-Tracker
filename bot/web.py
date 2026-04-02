@@ -1,32 +1,43 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
+import re
+import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlparse
 
 from aiohttp import web
 from sqlalchemy import desc, select
 from sqlalchemy.orm import joinedload, sessionmaker
 
-import re
-from urllib.parse import urlparse
-
+from bot.config import Settings
 from bot.db.models import Chat, Task, TaskEventType
 from bot.live_updates import LiveUpdateBroadcaster
 from bot.services.task_service import TaskService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MINIAPP_DIST = REPO_ROOT / "miniapp" / "dist"
+SESSION_COOKIE_NAME = "miniapp_auth"
 
 
-def create_web_app(session_factory: sessionmaker, broadcaster: LiveUpdateBroadcaster) -> web.Application:
-    app = web.Application()
+def create_web_app(
+    session_factory: sessionmaker,
+    broadcaster: LiveUpdateBroadcaster,
+    settings: Settings,
+) -> web.Application:
+    app = web.Application(middlewares=[miniapp_auth_middleware])
     app["session_factory"] = session_factory
     app["broadcaster"] = broadcaster
+    app["settings"] = settings
     app.router.add_get("/", root_handler)
     app.router.add_get("/miniapp", miniapp_handler)
     app.router.add_get("/miniapp/{tail:.*}", miniapp_handler)
+    app.router.add_post("/api/auth/telegram", telegram_auth_handler)
     app.router.add_get("/api/tasks", tasks_handler)
     app.router.add_get("/api/chats", chats_handler)
     app.router.add_get("/api/stream", events_handler)
@@ -35,6 +46,20 @@ def create_web_app(session_factory: sessionmaker, broadcaster: LiveUpdateBroadca
     app.router.add_post("/api/tasks/{task_id:\\d+}/restore", restore_task_handler)
     app.router.add_delete("/api/tasks/{task_id:\\d+}", delete_task_handler)
     return app
+
+
+@web.middleware
+async def miniapp_auth_middleware(request: web.Request, handler):
+    path = request.path
+    if path.startswith("/api/") and path != "/api/auth/telegram":
+        session = read_auth_session(request)
+        if session is None:
+            raise web.HTTPUnauthorized(
+                text=json.dumps({"ok": False, "error": "miniapp_auth_required"}),
+                content_type="application/json",
+            )
+        request["miniapp_user"] = session
+    return await handler(request)
 
 
 async def root_handler(request: web.Request) -> web.Response:
@@ -57,6 +82,65 @@ async def miniapp_handler(request: web.Request) -> web.StreamResponse:
     if tail and target.exists() and target.is_file() and str(target).startswith(str(MINIAPP_DIST)):
         return web.FileResponse(target)
     return web.FileResponse(MINIAPP_DIST / "index.html")
+
+
+async def telegram_auth_handler(request: web.Request) -> web.Response:
+    settings: Settings = request.app["settings"]
+    payload = await request.json()
+    init_data = str(payload.get("init_data", "")).strip()
+    if not init_data:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"ok": False, "error": "telegram_init_data_missing"}),
+            content_type="application/json",
+        )
+
+    user = validate_telegram_init_data(
+        init_data=init_data,
+        bot_token=settings.bot_token,
+        max_age_seconds=settings.miniapp_auth_max_age_seconds,
+    )
+    if user is None:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"ok": False, "error": "telegram_init_data_invalid"}),
+            content_type="application/json",
+        )
+
+    username = str(user.get("username") or "").strip().lower()
+    if not username:
+        raise web.HTTPForbidden(
+            text=json.dumps({"ok": False, "error": "telegram_username_required"}),
+            content_type="application/json",
+        )
+
+    if settings.miniapp_allowed_usernames and username not in settings.miniapp_allowed_usernames:
+        raise web.HTTPForbidden(
+            text=json.dumps({"ok": False, "error": "miniapp_access_denied"}),
+            content_type="application/json",
+        )
+
+    response = web.json_response(
+        {
+            "ok": True,
+            "user": {
+                "id": user.get("id"),
+                "username": username,
+                "first_name": user.get("first_name"),
+                "last_name": user.get("last_name"),
+            },
+        }
+    )
+    write_auth_session(
+        response,
+        settings,
+        {
+            "id": user.get("id"),
+            "username": username,
+            "first_name": user.get("first_name"),
+            "last_name": user.get("last_name"),
+            "exp": int(time.time()) + settings.miniapp_auth_max_age_seconds,
+        },
+    )
+    return response
 
 
 async def tasks_handler(request: web.Request) -> web.Response:
@@ -91,7 +175,9 @@ async def chats_handler(request: web.Request) -> web.Response:
     with session_factory() as session:
         chats = list(session.scalars(select(Chat).order_by(Chat.title, Chat.telegram_chat_id)))
         chat_ids = {chat.telegram_chat_id for chat in chats}
-        task_chat_ids = set(session.scalars(select(Task.source_chat_id).where(Task.is_archived.is_(archived)).distinct()))
+        task_chat_ids = set(
+            session.scalars(select(Task.source_chat_id).where(Task.is_archived.is_(archived)).distinct())
+        )
         missing_ids = sorted(task_chat_ids - chat_ids)
     payload = {
         "chats": [
@@ -143,9 +229,9 @@ async def task_detail_handler(request: web.Request) -> web.Response:
     with session_factory() as session:
         task = (
             session.execute(
-            select(Task)
-            .options(joinedload(Task.assignee), joinedload(Task.events))
-            .where(Task.id == task_id)
+                select(Task)
+                .options(joinedload(Task.assignee), joinedload(Task.events))
+                .where(Task.id == task_id)
             )
             .unique()
             .scalar_one_or_none()
@@ -250,6 +336,99 @@ def serialize_dt(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
 
 
+def validate_telegram_init_data(
+    *,
+    init_data: str,
+    bot_token: str,
+    max_age_seconds: int,
+) -> dict[str, object] | None:
+    items = dict(parse_qsl(init_data, keep_blank_values=True))
+    provided_hash = items.pop("hash", None)
+    if not provided_hash:
+        return None
+
+    auth_date_raw = items.get("auth_date")
+    if not auth_date_raw:
+        return None
+    try:
+        auth_date = int(auth_date_raw)
+    except ValueError:
+        return None
+    if int(time.time()) - auth_date > max_age_seconds:
+        return None
+
+    data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(items.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, provided_hash):
+        return None
+
+    user_raw = items.get("user")
+    if not user_raw:
+        return None
+    try:
+        user = json.loads(user_raw)
+    except json.JSONDecodeError:
+        return None
+    return user if isinstance(user, dict) else None
+
+
+def write_auth_session(response: web.StreamResponse, settings: Settings, payload: dict[str, object | None]) -> None:
+    token = sign_session_payload(payload, settings.bot_token)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="Strict",
+        secure=settings.web_base_url.startswith("https://"),
+        max_age=settings.miniapp_auth_max_age_seconds,
+        path="/",
+    )
+
+
+def read_auth_session(request: web.Request) -> dict[str, object] | None:
+    settings: Settings = request.app["settings"]
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    payload = verify_session_payload(token, settings.bot_token)
+    if payload is None:
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, int) or exp < int(time.time()):
+        return None
+    username = payload.get("username")
+    if not isinstance(username, str):
+        return None
+    if settings.miniapp_allowed_usernames and username.lower() not in settings.miniapp_allowed_usernames:
+        return None
+    return payload
+
+
+def sign_session_payload(payload: dict[str, object | None], secret: str) -> str:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(body).decode("ascii").rstrip("=")
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def verify_session_payload(token: str, secret: str) -> dict[str, object] | None:
+    try:
+        encoded, signature = token.split(".", 1)
+    except ValueError:
+        return None
+    expected_signature = hmac.new(secret.encode("utf-8"), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_signature, signature):
+        return None
+    padded = encoded + "=" * (-len(encoded) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 
 
@@ -280,14 +459,12 @@ def find_report_url(task: Task) -> str | None:
     if not task.events:
         return None
 
-    # Prefer explicit report events, newest first.
     for event in reversed(task.events):
         if event.event_type == TaskEventType.REPORT:
             url = extract_first_google_report_url(event.message_text)
             if url:
                 return url
 
-    # Fallback: messages that look like a report mention.
     for event in reversed(task.events):
         lowered = event.message_text.lower()
         if "отчет" in lowered or "отчёт" in lowered:

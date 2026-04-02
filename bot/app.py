@@ -66,7 +66,7 @@ async def main() -> None:
         )
     )
 
-    web_app = create_web_app(session_factory, broadcaster)
+    web_app = create_web_app(session_factory, broadcaster, settings)
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, host=settings.web_host, port=settings.web_port)

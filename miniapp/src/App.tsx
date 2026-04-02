@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { initTelegramWebApp } from "@/lib/telegram"
+import { getTelegramInitData, initTelegramWebApp } from "@/lib/telegram"
 import { taskDisplayStatus } from "@/lib/task-status"
 import type { ChatSummary, TaskDetail, TaskSummary } from "@/types"
 
@@ -51,16 +51,34 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [taskActionLoading, setTaskActionLoading] = useState<"archive" | "restore" | "delete" | null>(null)
+  const [authState, setAuthState] = useState<"checking" | "authorized" | "blocked">("checking")
+  const [authError, setAuthError] = useState("")
 
   useEffect(() => {
-    initTelegramWebApp()
+    const webApp = initTelegramWebApp()
+    const initData = getTelegramInitData()
+
+    if (!webApp || !initData) {
+      setAuthState("blocked")
+      setAuthError("Мини-приложение доступно только из Telegram.")
+      setLoading(false)
+      return
+    }
+
+    void authenticateMiniApp(initData)
   }, [])
 
   useEffect(() => {
+    if (authState !== "authorized") {
+      return
+    }
     void loadTasks()
-  }, [archiveView])
+  }, [archiveView, authState])
 
   useEffect(() => {
+    if (authState !== "authorized") {
+      return
+    }
     const eventSource = new EventSource("/api/stream")
 
     eventSource.onmessage = (event) => {
@@ -81,7 +99,7 @@ export default function App() {
     return () => {
       eventSource.close()
     }
-  }, [archiveView, selectedTaskId])
+  }, [archiveView, authState, selectedTaskId])
 
   useEffect(() => {
     if (!chatDropdownOpen) {
@@ -106,11 +124,11 @@ export default function App() {
   }, [chatDropdownOpen])
 
   useEffect(() => {
-    if (selectedTaskId === null) {
+    if (authState !== "authorized" || selectedTaskId === null) {
       return
     }
     void loadTaskDetail(selectedTaskId)
-  }, [selectedTaskId])
+  }, [authState, selectedTaskId])
 
   const filteredTasks = useMemo(() => {
     return tasks
@@ -198,6 +216,10 @@ export default function App() {
       fetch(`/api/tasks${archivedQuery}`),
       fetch(`/api/chats${archivedQuery}`),
     ])
+    if (tasksResponse.status === 401 || chatsResponse.status === 401 || tasksResponse.status === 403 || chatsResponse.status === 403) {
+      handleAuthFailure("Доступ к mini app разрешён только выбранным пользователям из Telegram.")
+      return
+    }
     const tasksPayload = (await tasksResponse.json()) as { tasks: TaskSummary[] }
     const chatsPayload = (await chatsResponse.json()) as { chats: ChatSummary[] }
     setTasks(tasksPayload.tasks)
@@ -216,6 +238,10 @@ export default function App() {
       setLoadingDetail(true)
     }
     const response = await fetch(`/api/tasks/${taskId}`)
+    if (response.status === 401 || response.status === 403) {
+      handleAuthFailure("Сессия mini app истекла или доступ запрещён.")
+      return
+    }
     if (!response.ok) {
       setSelectedTask(null)
       setSelectedTaskId(null)
@@ -269,6 +295,10 @@ export default function App() {
         action === "delete" ? `/api/tasks/${taskId}` : `/api/tasks/${taskId}/${action}`,
         { method: action === "delete" ? "DELETE" : "POST" },
       )
+      if (response.status === 401 || response.status === 403) {
+        handleAuthFailure("Сессия mini app истекла или доступ запрещён.")
+        return
+      }
       if (!response.ok) {
         throw new Error(`Request failed: ${response.status}`)
       }
@@ -278,6 +308,69 @@ export default function App() {
     } finally {
       setTaskActionLoading(null)
     }
+  }
+
+  async function authenticateMiniApp(initData: string) {
+    try {
+      const response = await fetch("/api/auth/telegram", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ init_data: initData }),
+      })
+      if (!response.ok) {
+        handleAuthFailure("Доступ к mini app разрешён только через Telegram и только для согласованных пользователей.")
+        return
+      }
+      setAuthState("authorized")
+      setAuthError("")
+    } catch {
+      handleAuthFailure("Не удалось подтвердить доступ к mini app.")
+    }
+  }
+
+  function handleAuthFailure(message: string) {
+    setAuthState("blocked")
+    setAuthError(message)
+    setLoading(false)
+    setLoadingDetail(false)
+    setTasks([])
+    setChats([])
+    setSelectedTask(null)
+    setSelectedTaskId(null)
+  }
+
+  if (authState === "checking") {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <div className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-4">
+          <Card className="w-full border-primary/20 bg-black/80">
+            <CardContent className="flex min-h-[220px] items-center justify-center gap-3 p-6 text-white">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              Проверяю доступ к mini app...
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    )
+  }
+
+  if (authState === "blocked") {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <div className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-4">
+          <Card className="w-full border-primary/20 bg-black/80">
+            <CardContent className="space-y-3 p-6">
+              <div className="text-lg font-semibold text-white">Доступ ограничен</div>
+              <div className="text-sm leading-6 text-zinc-300">
+                {authError || "Мини-приложение открывается только из Telegram Mini App и только для разрешённых пользователей."}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    )
   }
 
   return (

@@ -7,9 +7,13 @@ type TelegramWebApp = {
   setBackgroundColor?: (color: string) => void
   themeParams?: TelegramThemeParams
   colorScheme?: "light" | "dark"
+  initData?: string
   initDataUnsafe?: {
     user?: {
+      id?: number
       username?: string
+      first_name?: string
+      last_name?: string
     }
   }
 }
@@ -54,4 +58,8 @@ export function initTelegramWebApp() {
 
 export function getCurrentTelegramUsername() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.username?.toLowerCase() ?? null
+}
+
+export function getTelegramInitData() {
+  return window.Telegram?.WebApp?.initData?.trim() ?? ""
 }
