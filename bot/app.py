@@ -36,6 +36,7 @@ async def main() -> None:
         session=bot_session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot_info = await bot.me()
     dispatcher = Dispatcher()
 
     parser = MessageParser()
@@ -62,7 +63,9 @@ async def main() -> None:
             session_factory=session_factory,
             parser=parser,
             task_service=task_service,
+            report_service=report_service,
             broadcaster=broadcaster,
+            bot_username=bot_info.username,
         )
     )
 

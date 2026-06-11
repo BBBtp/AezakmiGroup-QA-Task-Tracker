@@ -430,6 +430,7 @@ def verify_session_payload(token: str, secret: str) -> dict[str, object] | None:
 
 
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+ARCHIVE_NAME_RE = re.compile(r"\b[\wА-Яа-я-]+\.(?:zip|rar|7z)\b", re.IGNORECASE)
 
 
 def is_google_report_url(url: str) -> bool:
@@ -455,21 +456,28 @@ def extract_first_google_report_url(text: str | None) -> str | None:
     return None
 
 
+def extract_first_archive_reference(text: str | None) -> str | None:
+    if not text:
+        return None
+    for match in URL_RE.finditer(text):
+        url = match.group(0)
+        if url.lower().split("?", 1)[0].endswith((".zip", ".rar", ".7z")):
+            return url
+    archive_match = ARCHIVE_NAME_RE.search(text)
+    return archive_match.group(0) if archive_match else None
+
+
 def find_report_url(task: Task) -> str | None:
     if not task.events:
         return None
 
     for event in reversed(task.events):
         if event.event_type == TaskEventType.REPORT:
-            url = extract_first_google_report_url(event.message_text)
-            if url:
-                return url
+            return extract_first_archive_reference(event.message_text) or "archive"
 
     for event in reversed(task.events):
         lowered = event.message_text.lower()
-        if "отчет" in lowered or "отчёт" in lowered:
-            url = extract_first_google_report_url(event.message_text)
-            if url:
-                return url
+        if any(token in lowered for token in (".zip", ".rar", ".7z")):
+            return extract_first_archive_reference(event.message_text) or "archive"
 
     return None

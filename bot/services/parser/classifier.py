@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from bot.services.parser.schemas import ClassificationResult, ExtractedEntities, Intent, ResolvedTaskId
 
 DONE_PHRASES = (
@@ -8,7 +10,6 @@ DONE_PHRASES = (
     "готово",
     "сделано",
     "done",
-    "fixed",
     "закрыто",
 )
 UPDATE_PHRASES = (
@@ -31,12 +32,35 @@ UPDATE_PHRASES = (
 NEW_TASK_PHRASES = (
     "на проверку",
     "на тест",
+    "на тесты",
+    "прила на тест",
+    "прила на тесты",
     "нужно проверить",
     "посмотрите",
     "можете глянуть",
     "bug report",
     "описание задачи",
+    "тз:",
+    "репа:",
 )
+
+DONE_LINE_RE = re.compile(
+    r"^(?:задач[ау]\s+)?(?:[A-Za-zА-Яа-я]+[_ -]?\d{1,6}\s+)?"
+    r"(?:все окей|всё окей|готово|сделано|done|закрыто)[.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def has_explicit_done_message(text: str) -> bool:
+    lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    compact = " ".join(lines)
+    if len(compact) <= 80 and DONE_LINE_RE.match(compact):
+        return True
+
+    return any(len(line) <= 80 and DONE_LINE_RE.match(line) for line in lines)
 
 
 def classify_intent(
@@ -49,7 +73,7 @@ def classify_intent(
     reasons: list[str] = []
     confidence = 0.05
 
-    if any(phrase in lowered for phrase in DONE_PHRASES):
+    if has_explicit_done_message(text):
         confidence = 0.65
         reasons.append("completion phrase detected")
         if resolved_task_id:

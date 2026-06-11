@@ -108,6 +108,18 @@ def classify_url(url: str) -> str:
     return "other"
 
 
+def ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
 def extract_entities(text: str) -> ExtractedEntities:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     urls = [UrlEntity(url=match.group(0), kind=classify_url(match.group(0))) for match in URL_RE.finditer(text)]
@@ -132,8 +144,8 @@ def extract_entities(text: str) -> ExtractedEntities:
     return ExtractedEntities(
         mentions=sorted({match.group(1) for match in MENTION_RE.finditer(text)}),
         urls=urls,
-        archive_names=sorted({match.group(1) for match in ARCHIVE_RE.finditer(text)}),
-        candidate_task_ids=sorted({match.group(1) for match in TASK_ID_RE.finditer(text)}),
+        archive_names=ordered_unique([match.group(1) for match in ARCHIVE_RE.finditer(text)]),
+        candidate_task_ids=ordered_unique([match.group(1) for match in TASK_ID_RE.finditer(text)]),
         file_paths=file_paths,
         line_numbers=[int(match.group(1) or match.group(2)) for match in LINE_NUMBER_RE.finditer(text)],
         instruction_lines=instruction_lines,

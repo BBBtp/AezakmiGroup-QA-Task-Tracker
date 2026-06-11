@@ -51,7 +51,6 @@ export default function App() {
   const selectedTaskIdRef = useRef<number | null>(null)
   const tasksSnapshotRef = useRef("")
   const chatsSnapshotRef = useRef("")
-  const selectedTaskSnapshotRef = useRef("")
   const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [taskActionLoading, setTaskActionLoading] = useState<"archive" | "restore" | "delete" | null>(null)
@@ -86,10 +85,6 @@ export default function App() {
   useEffect(() => {
     chatsSnapshotRef.current = JSON.stringify(chats)
   }, [chats])
-
-  useEffect(() => {
-    selectedTaskSnapshotRef.current = selectedTask ? JSON.stringify(selectedTask) : ""
-  }, [selectedTask])
 
   useEffect(() => {
     if (authState !== "authorized") {
@@ -317,10 +312,7 @@ export default function App() {
       return
     }
     const payload = (await response.json()) as TaskDetail
-    const nextTaskSnapshot = JSON.stringify(payload)
-    if (selectedTaskSnapshotRef.current !== nextTaskSnapshot) {
-      setSelectedTask(payload)
-    }
+    setSelectedTask(payload)
     if (showLoader) {
       setLoadingDetail(false)
     }

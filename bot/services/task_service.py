@@ -10,9 +10,16 @@ from bot.db.models import Chat, Task, TaskEvent, TaskEventType, TaskStatus, User
 from bot.services.parser.schemas import Intent, ParseResult
 
 ASSIGNEE_ALIASES = {
+    "diiaanag": "Диана",
     "glebcore": "Глеб",
     "glebc0re": "Глеб",
     "bbbbbbtp": "Богдан",
+}
+
+STATUS_LABELS = {
+    TaskStatus.ASSIGNED: "в работе",
+    TaskStatus.DONE: "завершено",
+    TaskStatus.PAUSED: "пауза",
 }
 
 
@@ -149,7 +156,7 @@ class TaskService:
         )
         return session.scalar(stmt)
 
-    def resolve_task_for_message(
+    def resolve_task_by_reply_or_key(
         self,
         session: Session,
         *,
@@ -167,7 +174,7 @@ class TaskService:
             if task:
                 return task
 
-        return self.get_last_active_task(session, chat_id)
+        return None
 
     def create_task_from_message(
         self,
@@ -351,33 +358,15 @@ class TaskService:
             )
 
         if intent == Intent.TASK_UPDATE:
-            task = self.resolve_task_for_message(
-                session,
-                parse_result=parse_result,
-                chat_id=chat_id,
-                reply_to_message_id=reply_to_message_id,
-            )
-            return self.add_update(
-                session,
-                task=task,
-                message_text=parse_result.text,
-                source_chat_id=chat_id,
-                source_message_id=message_id,
+            return TaskActionResult(
+                action="ignored",
+                message="Обновления учитываются только ответом на сообщение из истории задачи",
             )
 
         if intent == Intent.TASK_DONE:
-            task = self.resolve_task_for_message(
-                session,
-                parse_result=parse_result,
-                chat_id=chat_id,
-                reply_to_message_id=reply_to_message_id,
-            )
-            return self.mark_done(
-                session,
-                task=task,
-                message_text=parse_result.text,
-                source_chat_id=chat_id,
-                source_message_id=message_id,
+            return TaskActionResult(
+                action="ignored",
+                message="Закрытие задачи учитывается только ответом на сообщение из истории задачи",
             )
 
         return TaskActionResult(action="ignored", message="Сообщение не классифицировано как задача")
@@ -430,6 +419,84 @@ class TaskService:
     def manual_done(self, session: Session, task_key: str) -> TaskActionResult:
         task = self.find_open_task_by_key(session, task_key.lower())
         return self.mark_done(session, task=task, message_text=f"Manual close via /done {task_key}")
+
+    def manual_set_status(
+        self,
+        session: Session,
+        *,
+        task_key: str,
+        status: TaskStatus,
+        actor_username: str | None,
+        message_text: str,
+    ) -> TaskActionResult:
+        task = self.find_task_by_key(session, task_key.lower())
+        if task is None:
+            return TaskActionResult(action="ignored", message=f"Задача {task_key} не найдена")
+
+        if status == TaskStatus.DONE:
+            return self.mark_done(
+                session,
+                task=task,
+                message_text=message_text or f"Статус вручную изменен на {STATUS_LABELS[status]}",
+            )
+
+        task.status = status
+        if status != TaskStatus.DONE:
+            task.completed_at = None
+
+        actor = f" @{actor_username}" if actor_username else ""
+        self.add_event(
+            session,
+            task=task,
+            event_type=TaskEventType.UPDATED,
+            message_text=f"Статус вручную изменен на {STATUS_LABELS[status]}{actor}",
+        )
+        return TaskActionResult(
+            action="updated",
+            task=task,
+            message=self.format_task_message(
+                prefix=f"Статус {task.task_key}: {STATUS_LABELS[status]}",
+                app_name=task.app_name,
+            ),
+        )
+
+    def manual_set_task_status(
+        self,
+        session: Session,
+        *,
+        task: Task | None,
+        status: TaskStatus,
+        actor_username: str | None,
+        message_text: str,
+    ) -> TaskActionResult:
+        if task is None:
+            return TaskActionResult(action="ignored", message="Не удалось найти задачу для смены статуса")
+
+        if status == TaskStatus.DONE:
+            return self.mark_done(
+                session,
+                task=task,
+                message_text=message_text or f"Статус вручную изменен на {STATUS_LABELS[status]}",
+            )
+
+        task.status = status
+        task.completed_at = None
+
+        actor = f" @{actor_username}" if actor_username else ""
+        self.add_event(
+            session,
+            task=task,
+            event_type=TaskEventType.UPDATED,
+            message_text=f"Статус вручную изменен на {STATUS_LABELS[status]}{actor}",
+        )
+        return TaskActionResult(
+            action="updated",
+            task=task,
+            message=self.format_task_message(
+                prefix=f"Статус {task.task_key}: {STATUS_LABELS[status]}",
+                app_name=task.app_name,
+            ),
+        )
 
     def archive_task(self, session: Session, task_id: int) -> TaskActionResult:
         task = session.scalar(select(Task).where(Task.id == task_id))
@@ -654,7 +721,7 @@ class TaskService:
     @staticmethod
     def classify_reply_event_type(message_text: str) -> TaskEventType:
         lowered = message_text.lower()
-        if any(token in lowered for token in ("отчет", "отчёт", "вот отчет", "вот отчёт", "ссылка на отчет", "ссылка на отчёт")):
+        if any(token in lowered for token in (".zip", ".rar", ".7z")):
             return TaskEventType.REPORT
         if any(token in lowered for token in ("не исправлено", "новые пункты", "новый баг", "новые баги", "добавил новые пункты", "указал")):
             return TaskEventType.REVIEW
@@ -675,9 +742,13 @@ class TaskService:
                 "fix",
                 "fixed",
                 "залил фикс",
-                "[photo",
-                "[video",
-                "[animation",
+                "документ:",
+                ".zip",
+                ".rar",
+                ".7z",
+                "фото:",
+                "видео",
+                "gif",
             )
         ):
             return TaskEventType.UPDATED
