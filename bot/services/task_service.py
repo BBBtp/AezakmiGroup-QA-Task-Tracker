@@ -119,33 +119,62 @@ class TaskService:
         )
         return session.scalar(stmt)
 
-    def find_task_by_message(self, session: Session, chat_id: int, message_id: int) -> Task | None:
-        return session.scalar(
-            select(Task).where(
-                Task.source_chat_id == chat_id,
-                Task.source_message_id == message_id,
-                self._active_task_clause(),
-            )
-        )
+    def find_task_by_message(
+        self,
+        session: Session,
+        chat_id: int,
+        message_id: int,
+        *,
+        include_archived: bool = False,
+    ) -> Task | None:
+        stmt = select(Task).where(Task.source_chat_id == chat_id, Task.source_message_id == message_id)
+        if not include_archived:
+            stmt = stmt.where(self._active_task_clause())
+        return session.scalar(stmt)
 
-    def find_task_by_event_message(self, session: Session, chat_id: int, message_id: int) -> Task | None:
+    def find_task_by_event_message(
+        self,
+        session: Session,
+        chat_id: int,
+        message_id: int,
+        *,
+        include_archived: bool = False,
+    ) -> Task | None:
         stmt = (
             select(Task)
             .join(TaskEvent, TaskEvent.task_id == Task.id)
             .where(
                 TaskEvent.source_chat_id == chat_id,
                 TaskEvent.source_message_id == message_id,
-                self._active_task_clause(),
             )
             .limit(1)
         )
+        if not include_archived:
+            stmt = stmt.where(self._active_task_clause())
         return session.scalar(stmt)
 
-    def find_task_by_message_reference(self, session: Session, chat_id: int, message_id: int) -> Task | None:
-        task = self.find_task_by_message(session, chat_id, message_id)
+    def find_task_by_message_reference(
+        self,
+        session: Session,
+        chat_id: int,
+        message_id: int,
+        *,
+        include_archived: bool = False,
+    ) -> Task | None:
+        task = self.find_task_by_message(
+            session,
+            chat_id,
+            message_id,
+            include_archived=include_archived,
+        )
         if task is not None:
             return task
-        return self.find_task_by_event_message(session, chat_id, message_id)
+        return self.find_task_by_event_message(
+            session,
+            chat_id,
+            message_id,
+            include_archived=include_archived,
+        )
 
     def get_last_active_task(self, session: Session, chat_id: int) -> Task | None:
         stmt: Select[tuple[Task]] = (
@@ -497,6 +526,98 @@ class TaskService:
                 app_name=task.app_name,
             ),
         )
+
+    def manual_assign_task(
+        self,
+        session: Session,
+        *,
+        task: Task | None,
+        assignee_telegram_id: int,
+        assignee_username: str | None,
+        message_text: str,
+    ) -> TaskActionResult:
+        if task is None:
+            return TaskActionResult(action="ignored", message="Не удалось найти задачу для назначения")
+        if not self.is_known_tester(assignee_username):
+            return TaskActionResult(action="ignored", task=task, message="Назначать задачу может только тестировщик из списка")
+
+        user = self.get_or_create_user(
+            session,
+            telegram_user_id=assignee_telegram_id,
+            username=assignee_username,
+        )
+        if task.assignee_user_id == user.id and task.status == TaskStatus.ASSIGNED:
+            return TaskActionResult(
+                action="ignored",
+                task=task,
+                message=f"{task.task_key} уже отслеживается за {self.format_assignee(user)}",
+            )
+
+        task.assignee_user_id = user.id
+        task.status = TaskStatus.ASSIGNED
+        task.completed_at = None
+        self.add_event(
+            session,
+            task=task,
+            event_type=TaskEventType.UPDATED,
+            message_text=f"Исполнитель назначен командой: {message_text}",
+        )
+        return TaskActionResult(
+            action="assigned",
+            task=task,
+            message=self.format_task_message(
+                prefix=f"{task.task_key} отслеживается за {self.format_assignee(user)}",
+                app_name=task.app_name,
+            ),
+        )
+
+    def manual_set_app_name(
+        self,
+        session: Session,
+        *,
+        task: Task | None,
+        app_name: str | None,
+        actor_username: str | None,
+    ) -> TaskActionResult:
+        if task is None:
+            return TaskActionResult(action="ignored", message="Не удалось найти задачу для изменения приложения")
+
+        normalized_app_name = " ".join(app_name.split()) if app_name else None
+        task.app_name = normalized_app_name
+        task.title = self.compose_title(task.task_key, normalized_app_name) if normalized_app_name else task.task_key
+
+        actor = f" @{actor_username}" if actor_username else ""
+        event_text = (
+            f"Приложение вручную изменено на {normalized_app_name}{actor}"
+            if normalized_app_name
+            else f"Приложение вручную очищено{actor}"
+        )
+        self.add_event(
+            session,
+            task=task,
+            event_type=TaskEventType.UPDATED,
+            message_text=event_text,
+        )
+        return TaskActionResult(
+            action="updated",
+            task=task,
+            message=self.format_task_message(
+                prefix=f"Приложение {task.task_key} обновлено",
+                app_name=task.app_name,
+            ),
+        )
+
+    def manual_archive_or_delete_task(
+        self,
+        session: Session,
+        *,
+        task: Task | None,
+    ) -> TaskActionResult:
+        if task is None:
+            return TaskActionResult(action="ignored", message="Задача не найдена")
+        if task.is_archived:
+            return self.delete_task_permanently(session, task.id)
+        return self.archive_task(session, task.id)
 
     def archive_task(self, session: Session, task_id: int) -> TaskActionResult:
         task = session.scalar(select(Task).where(Task.id == task_id))

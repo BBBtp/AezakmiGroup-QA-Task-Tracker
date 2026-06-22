@@ -41,6 +41,9 @@ NEW_TASK_PHRASES = (
     "bug report",
     "описание задачи",
     "тз:",
+    "т3:",
+    "t3:",
+    "tz:",
     "репа:",
 )
 
@@ -83,6 +86,24 @@ def classify_intent(
             confidence += 0.1
             reasons.append("reply context may resolve task")
         return ClassificationResult(intent=Intent.TASK_DONE, confidence=min(confidence, 1.0), reasons=reasons)
+
+    has_new_task_marker = any(phrase in lowered for phrase in NEW_TASK_PHRASES) or bool(entities.instruction_lines)
+    if not is_reply and resolved_task_id and (entities.mentions or entities.urls or entities.archive_names or has_new_task_marker):
+        confidence = 0.4
+        reasons.append("task id resolved")
+        if entities.archive_names:
+            confidence += 0.2
+            reasons.append("archive name present")
+        if entities.mentions:
+            confidence += 0.2
+            reasons.append("assignee mention present")
+        if entities.urls:
+            confidence += 0.15
+            reasons.append("task-related link present")
+        if has_new_task_marker:
+            confidence += 0.2
+            reasons.append("task-related instruction present")
+        return ClassificationResult(intent=Intent.NEW_TASK, confidence=min(confidence, 1.0), reasons=reasons)
 
     if any(phrase in lowered for phrase in UPDATE_PHRASES):
         confidence = 0.6 if is_reply or resolved_task_id else 0.45

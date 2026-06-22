@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from html import escape
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import desc, select
@@ -101,6 +102,50 @@ class ReportService:
         if len(tasks) > 30:
             lines.append(f"...и еще {len(tasks) - 30}")
         return "\n".join(lines)
+
+    @staticmethod
+    def format_status_report_rich_html(tasks: list[Task], date_from: datetime, date_to: datetime) -> str:
+        period = format_period(date_from, date_to)
+        if not tasks:
+            return (
+                "<h3>Статус задач</h3>"
+                f"<p><b>Период:</b> {escape(period)}</p>"
+                "<p>Задач нет</p>"
+            )
+
+        done = [task for task in tasks if task.status == TaskStatus.DONE]
+        assigned = [task for task in tasks if task.status == TaskStatus.ASSIGNED]
+        paused = [task for task in tasks if task.status == TaskStatus.PAUSED]
+
+        rows = []
+        for task in tasks[:30]:
+            assignee = task.assignee.display_name if task.assignee and task.assignee.display_name else "не назначен"
+            app_name = task.app_name or task.title
+            status = STATUS_LABELS.get(task.status, task.status.value)
+            rows.append(
+                "<tr>"
+                f"<td><code>{escape(task.task_key)}</code></td>"
+                f"<td>{escape(status)}</td>"
+                f"<td>{escape(assignee)}</td>"
+                f"<td>{escape(app_name)}</td>"
+                "</tr>"
+            )
+
+        hidden_count = len(tasks) - 30
+        hidden_note = f"<p>...и еще {hidden_count}</p>" if hidden_count > 0 else ""
+        return (
+            "<h3>Статус задач</h3>"
+            f"<p><b>Период:</b> {escape(period)}</p>"
+            "<table bordered striped>"
+            "<tr><th>Всего</th><th>В работе</th><th>Завершено</th><th>Пауза</th></tr>"
+            f"<tr><td>{len(tasks)}</td><td>{len(assigned)}</td><td>{len(done)}</td><td>{len(paused)}</td></tr>"
+            "</table>"
+            "<table bordered striped>"
+            "<tr><th>ID</th><th>Статус</th><th>Исполнитель</th><th>Приложение</th></tr>"
+            f"{''.join(rows)}"
+            "</table>"
+            f"{hidden_note}"
+        )
 
 
 def format_russian_date(value: datetime, *, include_year: bool) -> str:
