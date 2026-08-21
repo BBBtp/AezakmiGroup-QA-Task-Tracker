@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum as SqlEnum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -25,6 +36,14 @@ class TaskEventType(str, Enum):
     REVIEW = "review"
     QUESTION = "question"
     COMMENT = "comment"
+
+
+class DoqaReportJobStatus(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class User(Base):
@@ -96,3 +115,43 @@ class TaskEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     task: Mapped[Task] = relationship(back_populates="events")
+
+
+class DoqaReportJob(Base):
+    __tablename__ = "doqa_report_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id",
+            "command_message_id",
+            name="uq_doqa_report_job_command",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    command_message_id: Mapped[int] = mapped_column(Integer)
+    reaction_message_id: Mapped[int] = mapped_column(Integer)
+    target_message_id: Mapped[int] = mapped_column(Integer)
+    external_id: Mapped[int] = mapped_column(Integer, index=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[DoqaReportJobStatus] = mapped_column(
+        SqlEnum(DoqaReportJobStatus),
+        default=DoqaReportJobStatus.QUEUED,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sent_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
