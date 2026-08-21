@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 from sqlalchemy import func, select
 
-from bot.db.models import DoqaReportJob, DoqaReportJobStatus
+from bot.db.models import DoqaReportJob, DoqaReportJobStatus, Task, TaskEvent, TaskEventType
 from bot.db.session import init_db
 from bot.services.doqa_report import DoqaReportEmptyError, DoqaReportResult
 from bot.services.doqa_report.queue import DoqaReportQueue
+from bot.services.task_service import TaskService
 
 
 class FakeBot:
@@ -105,6 +106,60 @@ class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(service.calls, 1)
             self.assertEqual(len(self.bot.documents), 1)
             self.assertIn((1, 10, "👌"), self.bot.reactions)
+        finally:
+            await queue.close()
+
+    async def test_sent_zip_is_added_to_task_history_and_can_receive_replies(self) -> None:
+        with self.session_factory() as session:
+            task = Task(
+                task_key="ID 671",
+                task_number=671,
+                task_family="ID",
+                title="ID 671",
+                raw_text="Задача ID 671",
+                source_chat_id=1,
+                source_message_id=5,
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        service = FakeReportService(self.archive, [None])
+        task_service = TaskService()
+        queue = DoqaReportQueue(
+            self.bot,  # type: ignore[arg-type]
+            self.session_factory,
+            service,  # type: ignore[arg-type]
+            retry_delays_seconds=(0,),
+            task_service=task_service,
+        )
+        await queue.start()
+        try:
+            await queue.enqueue(
+                chat_id=1,
+                command_message_id=10,
+                target_message_id=5,
+                external_id=671,
+            )
+            completed = await self._wait_for_status(DoqaReportJobStatus.COMPLETED)
+
+            with self.session_factory() as session:
+                event = session.scalar(
+                    select(TaskEvent).where(
+                        TaskEvent.source_chat_id == 1,
+                        TaskEvent.source_message_id == completed.sent_message_id,
+                    )
+                )
+                resolved = task_service.find_task_by_message_reference(
+                    session,
+                    chat_id=1,
+                    message_id=completed.sent_message_id,
+                )
+
+            self.assertIsNotNone(event)
+            self.assertEqual(event.event_type, TaskEventType.REPORT)
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved.id, task_id)
         finally:
             await queue.close()
 

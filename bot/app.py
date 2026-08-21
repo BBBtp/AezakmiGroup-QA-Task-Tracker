@@ -101,6 +101,8 @@ async def main() -> None:
             session_factory,
             doqa_report_service,
             retry_delays_seconds=settings.doqa_report_retry_delays_seconds,
+            task_service=task_service,
+            broadcaster=broadcaster,
         )
         dispatcher.include_router(
             create_doqa_reports_router(

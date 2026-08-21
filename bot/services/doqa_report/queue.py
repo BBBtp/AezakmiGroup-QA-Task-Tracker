@@ -11,8 +11,10 @@ from aiogram.types import FSInputFile, ReactionTypeEmoji, ReplyParameters
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from bot.db.models import DoqaReportJob, DoqaReportJobStatus
+from bot.db.models import DoqaReportJob, DoqaReportJobStatus, TaskEventType
 from bot.integrations.doqa import DoqaApiError
+from bot.live_updates import LiveUpdateBroadcaster
+from bot.services.task_service import TaskService
 
 from .service import DoqaReportEmptyError, DoqaReportResult, DoqaReportService
 
@@ -34,11 +36,15 @@ class DoqaReportQueue:
         report_service: DoqaReportService,
         *,
         retry_delays_seconds: tuple[int, ...] = (15, 60, 180),
+        task_service: TaskService | None = None,
+        broadcaster: LiveUpdateBroadcaster | None = None,
     ) -> None:
         self.bot = bot
         self.session_factory = session_factory
         self.report_service = report_service
         self.retry_delays_seconds = retry_delays_seconds or (15, 60, 180)
+        self.task_service = task_service or TaskService()
+        self.broadcaster = broadcaster
         self._tasks: set[asyncio.Task[None]] = set()
         self._running_job_ids: set[int] = set()
         self._closed = False
@@ -55,7 +61,17 @@ class DoqaReportQueue:
                     job.next_attempt_at = None
             session.commit()
             job_ids = [job.id for job in jobs]
+            completed_job_ids = list(
+                session.scalars(
+                    select(DoqaReportJob.id).where(
+                        DoqaReportJob.status == DoqaReportJobStatus.COMPLETED,
+                        DoqaReportJob.sent_message_id.is_not(None),
+                    )
+                )
+            )
 
+        for job_id in completed_job_ids:
+            await self._track_report_message(job_id)
         for job_id in job_ids:
             self._spawn(job_id)
         if job_ids:
@@ -199,6 +215,7 @@ class DoqaReportQueue:
                         current.last_error = None
                         current.next_attempt_at = None
                         session.commit()
+                await self._track_report_message(job_id)
                 await self._set_reaction(chat_id, reaction_message_id, REACTION_ZIP_SENT)
                 return
             except Exception as error:
@@ -233,6 +250,50 @@ class DoqaReportQueue:
             finally:
                 if result is not None:
                     await asyncio.to_thread(self.report_service.cleanup, result)
+
+    async def _track_report_message(self, job_id: int) -> None:
+        """Attach the bot's ZIP message to the task reply chain."""
+        with self.session_factory() as session:
+            job = session.get(DoqaReportJob, job_id)
+            if job is None or job.sent_message_id is None:
+                return
+
+            existing_task = self.task_service.find_task_by_event_message(
+                session,
+                job.chat_id,
+                job.sent_message_id,
+                include_archived=True,
+            )
+            if existing_task is not None:
+                task_id = existing_task.id
+            else:
+                task = self.task_service.find_task_by_message_reference(
+                    session,
+                    job.chat_id,
+                    job.target_message_id,
+                    include_archived=True,
+                )
+                if task is None:
+                    logging.warning(
+                        "DoQA ZIP message is not linked to a task job_id=%s target_message_id=%s",
+                        job.id,
+                        job.target_message_id,
+                    )
+                    return
+                run_label = f", прогон #{job.run_id}" if job.run_id is not None else ""
+                self.task_service.add_event(
+                    session,
+                    task=task,
+                    event_type=TaskEventType.REPORT,
+                    message_text=f"DoQA ZIP-отчёт отправлен: ID {job.external_id}{run_label}",
+                    source_chat_id=job.chat_id,
+                    source_message_id=job.sent_message_id,
+                )
+                session.commit()
+                task_id = task.id
+
+        if self.broadcaster is not None:
+            await self.broadcaster.publish({"type": "task_changed", "task_id": task_id})
 
     def _load_job(self, job_id: int) -> DoqaReportJob | None:
         with self.session_factory() as session:
