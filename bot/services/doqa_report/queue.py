@@ -389,7 +389,7 @@ def _error_chat_text(error: Exception) -> str:
         )
     error_id = uuid4().hex[:8]
     return (
-        f"Не удалось сформировать ZIP-архив. Код ошибки: <code>{error_id}</code>.\n\n"
+        f"Не удалось сформировать или сохранить ZIP-отчёт. Код ошибки: <code>{error_id}</code>.\n\n"
         "Ответьте на это сообщение словом «повтори», чтобы запустить снова."
     )
 

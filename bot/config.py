@@ -33,6 +33,10 @@ class Settings:
     doqa_api_timeout_seconds: int = 60
     doqa_report_retry_delays_seconds: tuple[int, ...] = (15, 60, 180)
     doqa_pdf_font_path: Path | None = None
+    qadb_url: str | None = None
+    qadb_service_key: str | None = None
+    qadb_report_timezone: str = "+03:00"
+    qadb_timeout_seconds: int = 60
 
 
 def load_settings() -> Settings:
@@ -83,6 +87,10 @@ def load_settings() -> Settings:
     ) or (15, 60, 180)
     configured_font_path = getenv("DOQA_PDF_FONT_PATH", "").strip()
     doqa_pdf_font_path = Path(configured_font_path) if configured_font_path else None
+    qadb_url = getenv("QADB_URL", "").strip().rstrip("/") or None
+    qadb_service_key = getenv("QADB_SERVICE_KEY", "").strip() or None
+    qadb_report_timezone = getenv("QADB_REPORT_TZ", "+03:00").strip() or "+03:00"
+    qadb_timeout_seconds = max(5, int(getenv("QADB_TIMEOUT_SECONDS", "60")))
     doqa_values = (doqa_base_url, doqa_api_token, doqa_report_url_template)
     if any(doqa_values) and not all(doqa_values):
         raise ValueError(
@@ -106,6 +114,12 @@ def load_settings() -> Settings:
         raise ValueError(
             "DOQA_SPACE_ID is required when it cannot be inferred from DOQA_REPORT_URL_TEMPLATE"
         )
+    if bool(qadb_url) != bool(qadb_service_key):
+        raise ValueError("QADB_URL and QADB_SERVICE_KEY must be configured together")
+    if qadb_url:
+        parsed_qadb_url = urlparse(qadb_url)
+        if parsed_qadb_url.scheme not in {"http", "https"} or not parsed_qadb_url.netloc:
+            raise ValueError("QADB_URL must be an absolute HTTP(S) URL")
 
     return Settings(
         bot_token=bot_token,
@@ -130,4 +144,8 @@ def load_settings() -> Settings:
         doqa_api_timeout_seconds=doqa_api_timeout_seconds,
         doqa_report_retry_delays_seconds=doqa_report_retry_delays_seconds,
         doqa_pdf_font_path=doqa_pdf_font_path,
+        qadb_url=qadb_url,
+        qadb_service_key=qadb_service_key,
+        qadb_report_timezone=qadb_report_timezone,
+        qadb_timeout_seconds=qadb_timeout_seconds,
     )

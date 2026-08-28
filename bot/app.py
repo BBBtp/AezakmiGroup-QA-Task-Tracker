@@ -18,6 +18,7 @@ from bot.handlers.doqa_documents import create_doqa_documents_router
 from bot.handlers.doqa_reports import create_doqa_reports_router
 from bot.handlers.messages import create_messages_router
 from bot.integrations.doqa import DoqaClient
+from bot.integrations.qadb import QadbReportIngestor
 from bot.live_updates import LiveUpdateBroadcaster
 from bot.services.doqa_pdf.service import DoqaPdfService
 from bot.services.doqa_report import DoqaReportQueue, DoqaReportService
@@ -89,12 +90,24 @@ async def main() -> None:
             space_id=settings.doqa_space_id,
             timeout_seconds=settings.doqa_api_timeout_seconds,
         )
+        qadb_ingestor = None
+        if settings.qadb_url and settings.qadb_service_key:
+            qadb_ingestor = QadbReportIngestor(
+                settings.qadb_url,
+                settings.qadb_service_key,
+                report_timezone=settings.qadb_report_timezone,
+                timeout_seconds=settings.qadb_timeout_seconds,
+            )
+            logging.info("QADB report ingestion is enabled")
+        else:
+            logging.info("QADB report ingestion is disabled: settings are not configured")
         doqa_report_service = DoqaReportService(
             doqa_client,
             doqa_pdf_service,
             settings.doqa_report_url_template,
             font_path=settings.doqa_pdf_font_path,
             concurrency=settings.doqa_parser_concurrency,
+            qadb_ingestor=qadb_ingestor,
         )
         doqa_report_queue = DoqaReportQueue(
             bot,

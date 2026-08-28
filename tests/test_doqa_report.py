@@ -122,6 +122,34 @@ class DoqaPdfRendererTests(unittest.TestCase):
 
 
 class DoqaReportServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_service_ingests_generated_archive_into_qadb(self) -> None:
+        class FakeQadbIngestor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def ingest(self, archive_path, project_ref, run_id):
+                self.calls.append((archive_path, project_ref, run_id))
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeDoqaClient()
+            parser = DoqaPdfService(
+                Path(directory) / "runs",
+                max_input_bytes=2 * 1024 * 1024,
+                max_pages=20,
+            )
+            ingestor = FakeQadbIngestor()
+            service = DoqaReportService(
+                client,
+                parser,
+                "https://doqa.example/runs/{run_id}",
+                qadb_ingestor=ingestor,  # type: ignore[arg-type]
+            )
+
+            result = await service.create_report(671)
+
+            self.assertEqual(ingestor.calls, [(result.archive_path, "671", 385)])
+            service.cleanup(result)
+
     async def test_service_builds_link_and_cleans_temporary_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             client = FakeDoqaClient()

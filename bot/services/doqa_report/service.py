@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bot.integrations.doqa import DoqaClient
+from bot.integrations.qadb import QadbReportIngestor
 from bot.services.doqa_pdf.service import DoqaPdfService, DoqaRun
 
 from .pdf_renderer import render_doqa_parser_input_pdf
@@ -36,11 +37,13 @@ class DoqaReportService:
         *,
         font_path: Path | None = None,
         concurrency: int = 1,
+        qadb_ingestor: QadbReportIngestor | None = None,
     ) -> None:
         self.client = client
         self.pdf_parser = pdf_parser
         self.report_url_template = report_url_template
         self.font_path = font_path
+        self.qadb_ingestor = qadb_ingestor
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def create_report(self, external_id: int) -> DoqaReportResult:
@@ -61,6 +64,13 @@ class DoqaReportService:
                 if not parsed.report.bugs:
                     raise DoqaReportEmptyError(
                         f"В прогоне #{actual_run_id} нет открытых багов для архива"
+                    )
+                if self.qadb_ingestor is not None:
+                    await asyncio.to_thread(
+                        self.qadb_ingestor.ingest,
+                        parsed.archive_path,
+                        str(external_id),
+                        actual_run_id,
                     )
             except Exception:
                 self.pdf_parser.cleanup(parser_run)
