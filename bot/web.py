@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import time
 from datetime import datetime
@@ -18,6 +19,7 @@ from sqlalchemy.orm import joinedload, sessionmaker
 from bot.config import Settings
 from bot.db.models import Chat, Task, TaskEventType
 from bot.live_updates import LiveUpdateBroadcaster
+from bot.services.doqa_pdf.service import DoqaPdfService, DoqaRun
 from bot.services.task_service import TaskService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,11 +31,17 @@ def create_web_app(
     session_factory: sessionmaker,
     broadcaster: LiveUpdateBroadcaster,
     settings: Settings,
+    *,
+    doqa_pdf_service: DoqaPdfService | None = None,
 ) -> web.Application:
-    app = web.Application(middlewares=[miniapp_auth_middleware])
+    app = web.Application(
+        middlewares=[miniapp_auth_middleware],
+        client_max_size=(settings.doqa_parser_max_input_mb + 1) * 1024 * 1024,
+    )
     app["session_factory"] = session_factory
     app["broadcaster"] = broadcaster
     app["settings"] = settings
+    app["doqa_pdf_service"] = doqa_pdf_service
     app.router.add_get("/", root_handler)
     app.router.add_get("/miniapp", miniapp_handler)
     app.router.add_get("/miniapp/{tail:.*}", miniapp_handler)
@@ -45,7 +53,67 @@ def create_web_app(
     app.router.add_post("/api/tasks/{task_id:\\d+}/archive", archive_task_handler)
     app.router.add_post("/api/tasks/{task_id:\\d+}/restore", restore_task_handler)
     app.router.add_delete("/api/tasks/{task_id:\\d+}", delete_task_handler)
+    app.router.add_post("/api/doqa/parse-pdf", doqa_parse_pdf_handler)
     return app
+
+
+async def doqa_parse_pdf_handler(request: web.Request) -> web.Response:
+    """Parse an uploaded PDF and return ZIP without publishing anything to QADB."""
+    service: DoqaPdfService | None = request.app["doqa_pdf_service"]
+    if service is None:
+        return _api_error("DoQA PDF-парсер не настроен", status=503)
+
+    run: DoqaRun | None = None
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != "file" or not field.filename:
+            return _api_error("Передайте PDF в поле file", status=400)
+        if not field.filename.lower().endswith(".pdf"):
+            return _api_error("Для парсинга нужен файл с расширением .pdf", status=400)
+
+        run = service.prepare_run(field.filename)
+        size = 0
+        with run.input_pdf.open("wb") as target:
+            while chunk := await field.read_chunk():
+                size += len(chunk)
+                if size > service.max_input_bytes:
+                    limit_mb = service.max_input_bytes // (1024 * 1024)
+                    raise ValueError(f"PDF слишком большой. Максимальный размер: {limit_mb} МБ")
+                target.write(chunk)
+
+        result = await service.process(run)
+        archive = await asyncio.to_thread(result.archive_path.read_bytes)
+        return _zip_response(
+            archive,
+            filename=f"doqa_parsed_{run.run_id[:8]}.zip",
+            bug_count=len(result.report.bugs),
+        )
+    except ValueError as error:
+        return _api_error(str(error), status=400)
+    except (web.HTTPBadRequest, web.HTTPRequestEntityTooLarge) as error:
+        return _api_error(error.reason, status=error.status)
+    except Exception as error:
+        logging.exception("Manual DoQA PDF parsing failed")
+        return _api_error(f"Не удалось обработать PDF: {error}", status=500)
+    finally:
+        if run is not None:
+            await asyncio.to_thread(service.cleanup, run)
+
+
+def _zip_response(data: bytes, *, filename: str, bug_count: int) -> web.Response:
+    return web.Response(
+        body=data,
+        content_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-DoQA-Bug-Count": str(bug_count),
+        },
+    )
+
+
+def _api_error(message: str, *, status: int) -> web.Response:
+    return web.json_response({"ok": False, "error": message}, status=status)
 
 
 @web.middleware

@@ -54,11 +54,11 @@ SUMMARY_GROUP_PREFIXES = (
     "AI Video Generator /",
 )
 
-# Anchor of a bug block:
-# "<initials> <name parts...> dd.mm.yyyy hh:mm" or
-# "<name parts...> dd.mm.yyyy hh:mm".
+# Anchor of a bug block. New DoQA exports expose the decorative "bug" icon to
+# pdfplumber as a broken ``bu`` / ``g`` glyph around the author line, so the
+# first fragment is accepted here and the second one is skipped below.
 ANCHOR_RE = re.compile(
-    r"^(?:(?P<initials>[А-ЯЁA-Z]{1,4})\s+)?(?P<name>[^\d]+?)\s+"
+    r"^(?:bu(?:g)?\s+)?(?:(?P<initials>[А-ЯЁA-Z]{1,4})\s+)?(?P<name>[^\d]+?)\s+"
     r"(?P<date>\d{2}\.\d{2}\.\d{4})\s+(?P<time>\d{2}:\d{2})$"
 )
 
@@ -66,6 +66,7 @@ ANCHOR_RE = re.compile(
 SUMMARY_ROW_RE = re.compile(r"^\d+\s+\d+\s+\S")
 
 BUG_ID_TITLE_RE = re.compile(r"^(?P<id>\d+)\s+(?P<title>.+)$")
+DECORATIVE_GLYPH_RE = re.compile(r"^(?:bu|bug|g|checkmar|k)$", re.IGNORECASE)
 
 
 @dataclass
@@ -219,6 +220,17 @@ def _is_page_chrome(text: str) -> bool:
     return _is_page_header(text) or bool(PAGE_FOOTER_RE.match(text)) or bool(PRINTED_AT_RE.match(text))
 
 
+def _is_decorative_glyph(text: str) -> bool:
+    """Return True for icon names leaked by DoQA's PDF accessibility layer."""
+    return bool(DECORATIVE_GLYPH_RE.fullmatch(text.strip()))
+
+
+def _section_name(text: str) -> str | None:
+    """Normalize headings such as ``Вложения :`` emitted by newer exports."""
+    normalized = re.sub(r"\s+:\s*$", ":", text.strip())
+    return SECTION_HEADERS.get(normalized)
+
+
 def _is_closed_status(status: str) -> bool:
     normalized = status.strip().casefold().replace("ё", "е")
     return normalized in CLOSED_BUG_STATUSES
@@ -281,7 +293,9 @@ def _parse_block(rows: list[_Row]) -> Bug | None:
         return None
 
     index = 1
-    while index < len(rows) and _is_page_chrome(rows[index].text):
+    while index < len(rows) and (
+        _is_page_chrome(rows[index].text) or _is_decorative_glyph(rows[index].text)
+    ):
         index += 1
 
     if index >= len(rows):
@@ -334,8 +348,9 @@ def _parse_block(rows: list[_Row]) -> Bug | None:
 
         if _is_page_chrome(text):
             continue
-        if text in SECTION_HEADERS:
-            current = SECTION_HEADERS[text]
+        section_name = _section_name(text)
+        if section_name is not None:
+            current = section_name
             continue
         if any(marker in text for marker in ATTACHMENT_MARKERS):
             sections["attachments"].append(text.strip())

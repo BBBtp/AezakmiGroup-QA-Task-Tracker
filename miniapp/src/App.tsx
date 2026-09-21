@@ -3,6 +3,7 @@ import { ArrowLeft, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Loader
 
 import { TaskCard } from "@/components/task-card"
 import { TaskDetailPanel } from "@/components/task-detail"
+import { DoqaTools } from "@/components/doqa-tools"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -33,6 +34,7 @@ export default function App() {
     ["Глеб", "Глеб"],
   ] as const
   const [archiveView, setArchiveView] = useState(false)
+  const [appSection, setAppSection] = useState<"tasks" | "doqa">("tasks")
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null)
@@ -438,23 +440,25 @@ export default function App() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,212,0,0.06)_0%,transparent_20%,transparent_100%)]" />
       <div className="relative mx-auto flex max-w-[1500px] flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4 md:px-6">
-        <Card className="border-primary/15 bg-black/70">
-          <CardContent className="flex flex-wrap items-center gap-4 px-4 py-3 text-xs text-zinc-300">
-            <div>
-              <span className="text-zinc-500">Live:</span>{" "}
-              <span className={liveStatus === "connected" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-300" : "text-amber-300"}>
-                {liveStatus === "connected" ? "connected" : liveStatus === "error" ? "error" : "connecting"}
-              </span>
-            </div>
-            <div>
-              <span className="text-zinc-500">Last event:</span> {lastLiveEvent}
-            </div>
-            <div>
-              <span className="text-zinc-500">Last refresh:</span> {lastLiveAt}
-            </div>
-          </CardContent>
-        </Card>
-        <header className={`grid gap-3 ${archiveView ? "lg:grid-cols-1" : "lg:grid-cols-[1.4fr,0.8fr]"}`}>
+        {appSection === "tasks" ? (
+          <Card className="border-primary/15 bg-black/70">
+            <CardContent className="flex flex-wrap items-center gap-4 px-4 py-3 text-xs text-zinc-300">
+              <div>
+                <span className="text-zinc-500">Live:</span>{" "}
+                <span className={liveStatus === "connected" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-300" : "text-amber-300"}>
+                  {liveStatus === "connected" ? "connected" : liveStatus === "error" ? "error" : "connecting"}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-500">Last event:</span> {lastLiveEvent}
+              </div>
+              <div>
+                <span className="text-zinc-500">Last refresh:</span> {lastLiveAt}
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+        <header className={`grid gap-3 ${appSection === "doqa" || archiveView ? "lg:grid-cols-1" : "lg:grid-cols-[1.4fr,0.8fr]"}`}>
           <Card className="overflow-hidden border-primary/20 bg-black/80">
             <CardContent className="flex flex-col gap-2 p-4 sm:p-5">
               <div className="flex items-center gap-3 sm:gap-4">
@@ -467,7 +471,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          {!archiveView ? (
+          {appSection === "tasks" && !archiveView ? (
             <Card className="border-primary/20 bg-black/80">
               <CardContent className="p-4 sm:p-5">
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -495,6 +499,26 @@ export default function App() {
             </Card>
           ) : null}
         </header>
+
+        <div className="inline-flex w-full items-center rounded-full border border-primary/15 bg-black/80 p-1 sm:w-fit">
+          <button
+            className={`flex-1 rounded-full px-5 py-2.5 text-sm font-medium transition sm:flex-none ${appSection === "tasks" ? "bg-primary text-black" : "text-white hover:bg-white/5"}`}
+            onClick={() => setAppSection("tasks")}
+            type="button"
+          >
+            Задачи
+          </button>
+          <button
+            className={`flex-1 rounded-full px-5 py-2.5 text-sm font-medium transition sm:flex-none ${appSection === "doqa" ? "bg-primary text-black" : "text-white hover:bg-white/5"}`}
+            onClick={() => setAppSection("doqa")}
+            type="button"
+          >
+            DoQA отчёты
+          </button>
+        </div>
+
+        {appSection === "tasks" ? (
+          <>
 
         <section className="hidden gap-4 xl:grid xl:grid-cols-[460px,minmax(0,1fr)] xl:items-start">
           <Card className="border-primary/20 bg-black/80 xl:col-span-2">
@@ -1095,6 +1119,10 @@ export default function App() {
             </div>
           )}
         </section>
+          </>
+        ) : (
+          <DoqaTools />
+        )}
       </div>
     </div>
   )

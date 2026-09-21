@@ -4,11 +4,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pymupdf
 
 from bot.handlers.doqa_documents import is_doqa_parse_caption
 from bot.services.doqa_pdf.service import DoqaPdfService
+from bot.services.doqa_pdf.parser import parse_bugs
 
 
 class DoqaCaptionTests(unittest.TestCase):
@@ -24,6 +26,32 @@ class DoqaCaptionTests(unittest.TestCase):
 
 
 class DoqaPdfServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_new_doqa_export_with_split_bug_icon_is_parsed(self) -> None:
+        pages = [[
+            "21/9/2026, 11:51 AM",
+            "bu ГК Глеб Кальсин 21.09.2026 11:47",
+            "g",
+            "3717 AI Chat Companion / Экран чата и отправка сообщений",
+            "Приоритет Статус",
+            "Средний Открыт",
+            "Описание:",
+            "Проверки основного экрана общения.",
+            "Шаги:",
+            "Шаг 1: Отправить сообщение.",
+            "Ожидаемый результат",
+            "Сообщение отправлено.",
+            "Фактический результат",
+            "Сообщение зависло.",
+        ]]
+
+        with patch("bot.services.doqa_pdf.parser.extract_pages", return_value=pages):
+            report = parse_bugs(Path("new-doqa-export.pdf"))
+
+        self.assertEqual(len(report.bugs), 1)
+        self.assertEqual(report.bugs[0].bug_id, "3717")
+        self.assertEqual(report.bugs[0].status, "Открыт")
+        self.assertEqual(report.bugs[0].actual, "Сообщение зависло.")
+
     async def test_process_creates_docx_json_and_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_root = Path(directory) / "runs"
