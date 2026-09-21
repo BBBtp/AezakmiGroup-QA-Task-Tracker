@@ -1121,7 +1121,7 @@ export default function App() {
         </section>
           </>
         ) : (
-          <DoqaTools />
+          <DoqaTools tasks={tasks} />
         )}
       </div>
     </div>

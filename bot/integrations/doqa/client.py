@@ -19,13 +19,20 @@ class DoqaClient:
         base_url: str,
         api_token: str,
         *,
-        space_id: int,
+        space_id: int | None = None,
+        space_ids: tuple[int, ...] | None = None,
         timeout_seconds: int = 60,
         attempts: int = 3,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_token = api_token
-        self.space_id = space_id
+        configured_space_ids = space_ids or ((space_id,) if space_id is not None else ())
+        self.space_ids = tuple(dict.fromkeys(configured_space_ids))
+        if not self.space_ids:
+            raise ValueError("At least one DoQA space ID must be configured")
+        if any(configured_space_id <= 0 for configured_space_id in self.space_ids):
+            raise ValueError("DoQA space IDs must be positive integers")
+        self.space_id = self.space_ids[0]
         self.timeout_seconds = timeout_seconds
         self.attempts = max(1, attempts)
 
@@ -41,20 +48,45 @@ class DoqaClient:
         return report
 
     async def find_run_by_title_id(self, external_id: int) -> dict[str, Any]:
-        payload = await self._request_json(
-            "POST",
-            "/api/runs/list",
-            json={"spaceId": self.space_id, "search": str(external_id)},
+        responses = await asyncio.gather(
+            *(self._find_runs_in_space(space_id, external_id) for space_id in self.space_ids),
+            return_exceptions=True,
         )
-        candidates = list(_find_matching_runs(payload, external_id))
+        candidates: list[dict[str, Any]] = []
+        errors: list[tuple[int, BaseException]] = []
+        for space_id, response in zip(self.space_ids, responses, strict=True):
+            if isinstance(response, BaseException):
+                errors.append((space_id, response))
+                continue
+            for run in _find_matching_runs(response, external_id):
+                candidate = dict(run)
+                candidate["_space_id"] = space_id
+                candidates.append(candidate)
+
         if not candidates:
+            if errors:
+                failed_spaces = ", ".join(str(space_id) for space_id, _ in errors)
+                first_error = errors[0][1]
+                if isinstance(first_error, DoqaApiError) and first_error.status in {401, 403}:
+                    raise first_error
+                raise DoqaApiError(
+                    f"Не удалось проверить пространства DoQA: {failed_spaces}"
+                ) from first_error
+            spaces = ", ".join(str(space_id) for space_id in self.space_ids)
             raise DoqaApiError(
-                f"Не найден прогон с ID {external_id} в названии",
+                f"Не найден прогон с ID {external_id} в пространствах {spaces}",
                 status=404,
             )
         return max(
             candidates,
             key=lambda run: (str(run.get("createdAt") or ""), int(run.get("id") or 0)),
+        )
+
+    async def _find_runs_in_space(self, space_id: int, external_id: int) -> dict[str, Any]:
+        return await self._request_json(
+            "POST",
+            "/api/runs/list",
+            json={"spaceId": space_id, "search": str(external_id)},
         )
 
     async def _request_json(

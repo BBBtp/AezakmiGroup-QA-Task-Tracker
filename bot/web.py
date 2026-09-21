@@ -18,8 +18,9 @@ from sqlalchemy.orm import joinedload, sessionmaker
 
 from bot.config import Settings
 from bot.db.models import Chat, Task, TaskEventType
+from bot.integrations.doqa import DoqaApiError
 from bot.live_updates import LiveUpdateBroadcaster
-from bot.services.doqa_pdf.service import DoqaPdfService, DoqaRun
+from bot.services.doqa_report import DoqaReportEmptyError, DoqaReportResult, DoqaReportService
 from bot.services.task_service import TaskService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -32,16 +33,13 @@ def create_web_app(
     broadcaster: LiveUpdateBroadcaster,
     settings: Settings,
     *,
-    doqa_pdf_service: DoqaPdfService | None = None,
+    doqa_report_service: DoqaReportService | None = None,
 ) -> web.Application:
-    app = web.Application(
-        middlewares=[miniapp_auth_middleware],
-        client_max_size=(settings.doqa_parser_max_input_mb + 1) * 1024 * 1024,
-    )
+    app = web.Application(middlewares=[miniapp_auth_middleware])
     app["session_factory"] = session_factory
     app["broadcaster"] = broadcaster
     app["settings"] = settings
-    app["doqa_pdf_service"] = doqa_pdf_service
+    app["doqa_report_service"] = doqa_report_service
     app.router.add_get("/", root_handler)
     app.router.add_get("/miniapp", miniapp_handler)
     app.router.add_get("/miniapp/{tail:.*}", miniapp_handler)
@@ -53,61 +51,55 @@ def create_web_app(
     app.router.add_post("/api/tasks/{task_id:\\d+}/archive", archive_task_handler)
     app.router.add_post("/api/tasks/{task_id:\\d+}/restore", restore_task_handler)
     app.router.add_delete("/api/tasks/{task_id:\\d+}", delete_task_handler)
-    app.router.add_post("/api/doqa/parse-pdf", doqa_parse_pdf_handler)
+    app.router.add_post("/api/doqa/report", doqa_report_handler)
     return app
 
 
-async def doqa_parse_pdf_handler(request: web.Request) -> web.Response:
-    """Parse an uploaded PDF and return ZIP without publishing anything to QADB."""
-    service: DoqaPdfService | None = request.app["doqa_pdf_service"]
+async def doqa_report_handler(request: web.Request) -> web.Response:
+    """Build a ZIP from DoQA without writing to QADB or the task database."""
+    service: DoqaReportService | None = request.app["doqa_report_service"]
     if service is None:
-        return _api_error("DoQA PDF-парсер не настроен", status=503)
+        return _api_error("Получение отчётов DoQA не настроено", status=503)
 
-    run: DoqaRun | None = None
+    result: DoqaReportResult | None = None
     try:
-        reader = await request.multipart()
-        field = await reader.next()
-        if field is None or field.name != "file" or not field.filename:
-            return _api_error("Передайте PDF в поле file", status=400)
-        if not field.filename.lower().endswith(".pdf"):
-            return _api_error("Для парсинга нужен файл с расширением .pdf", status=400)
-
-        run = service.prepare_run(field.filename)
-        size = 0
-        with run.input_pdf.open("wb") as target:
-            while chunk := await field.read_chunk():
-                size += len(chunk)
-                if size > service.max_input_bytes:
-                    limit_mb = service.max_input_bytes // (1024 * 1024)
-                    raise ValueError(f"PDF слишком большой. Максимальный размер: {limit_mb} МБ")
-                target.write(chunk)
-
-        result = await service.process(run)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError
+        external_id = int(payload.get("external_id"))
+        if external_id <= 0:
+            raise ValueError
+        result = await service.create_report(external_id)
         archive = await asyncio.to_thread(result.archive_path.read_bytes)
         return _zip_response(
             archive,
-            filename=f"doqa_parsed_{run.run_id[:8]}.zip",
-            bug_count=len(result.report.bugs),
+            filename=f"doqa_{external_id}_run_{result.run_id}.zip",
+            bug_count=result.parsed_bug_count,
+            run_id=result.run_id,
         )
-    except ValueError as error:
-        return _api_error(str(error), status=400)
-    except (web.HTTPBadRequest, web.HTTPRequestEntityTooLarge) as error:
-        return _api_error(error.reason, status=error.status)
+    except (TypeError, ValueError, web.HTTPBadRequest):
+        return _api_error("Укажите корректный числовой ID приложения", status=400)
+    except DoqaReportEmptyError as error:
+        return _api_error(str(error), status=422)
+    except DoqaApiError as error:
+        status = 404 if error.status == 404 else 502
+        return _api_error(str(error), status=status)
     except Exception as error:
-        logging.exception("Manual DoQA PDF parsing failed")
-        return _api_error(f"Не удалось обработать PDF: {error}", status=500)
+        logging.exception("Manual DoQA report failed")
+        return _api_error(f"Не удалось сформировать отчёт: {error}", status=500)
     finally:
-        if run is not None:
-            await asyncio.to_thread(service.cleanup, run)
+        if result is not None:
+            await asyncio.to_thread(service.cleanup, result)
 
 
-def _zip_response(data: bytes, *, filename: str, bug_count: int) -> web.Response:
+def _zip_response(data: bytes, *, filename: str, bug_count: int, run_id: int) -> web.Response:
     return web.Response(
         body=data,
         content_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-DoQA-Bug-Count": str(bug_count),
+            "X-DoQA-Run-ID": str(run_id),
         },
     )
 
@@ -359,6 +351,7 @@ def serialize_task_summary(task: Task, chat_map: dict[int, Chat] | None = None) 
     return {
         "id": task.id,
         "task_key": task.task_key,
+        "task_number": task.task_number,
         "app_name": task.app_name,
         "title": task.title,
         "status": task.status.value,

@@ -3,10 +3,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pdfplumber
 
 from bot.handlers.doqa_reports import parse_doqa_run_id, parse_doqa_run_id_from_reference
+from bot.integrations.doqa import DoqaClient
 from bot.integrations.doqa.client import _find_matching_runs
 from bot.services.doqa_pdf.parser import parse_bugs
 from bot.services.doqa_pdf.service import DoqaPdfService
@@ -93,6 +95,58 @@ class DoqaReportCommandTests(unittest.TestCase):
         matches = list(_find_matching_runs(listing, 671))
 
         self.assertEqual([run["id"] for run in matches], [441])
+
+
+class DoqaClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_space_client_keeps_automatic_zip_search_scoped(self) -> None:
+        client = DoqaClient(
+            "https://doqa.example",
+            "token",
+            space_id=2,
+        )
+        request = AsyncMock(
+            return_value=_run_listing(
+                500,
+                "Фаст-трек | ID 467 | App",
+                "2026-09-18T10:00:00Z",
+            )
+        )
+
+        with patch.object(client, "_request_json", new=request):
+            result = await client.find_run_by_title_id(467)
+
+        self.assertEqual(result["_space_id"], 2)
+        request.assert_awaited_once_with(
+            "POST",
+            "/api/runs/list",
+            json={"spaceId": 2, "search": "467"},
+        )
+
+    async def test_finds_latest_matching_run_across_all_spaces(self) -> None:
+        client = DoqaClient(
+            "https://doqa.example",
+            "token",
+            space_ids=(2, 4, 6),
+        )
+        listings = {
+            2: _run_listing(501, "Фаст-трек | ID 467 | App", "2026-09-18T10:00:00Z"),
+            4: _run_listing(502, "Flutter | ID 467 | App", "2026-09-20T10:00:00Z"),
+            6: _run_listing(503, "Native | ID 999 | Other", "2026-09-21T10:00:00Z"),
+        }
+
+        async def request_json(method, path, *, json=None, run_id=None):
+            self.assertEqual((method, path), ("POST", "/api/runs/list"))
+            return listings[json["spaceId"]]
+
+        with patch.object(client, "_request_json", new=AsyncMock(side_effect=request_json)) as request:
+            result = await client.find_run_by_title_id(467)
+
+        self.assertEqual(result["id"], 502)
+        self.assertEqual(result["_space_id"], 4)
+        self.assertEqual(
+            {call.kwargs["json"]["spaceId"] for call in request.await_args_list},
+            {2, 4, 6},
+        )
 
 
 class DoqaPdfRendererTests(unittest.TestCase):
@@ -210,3 +264,20 @@ class DoqaReportServiceTests(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaisesRegex(DoqaReportEmptyError, "нет открытых багов"):
                 await service.create_report(385)
+
+
+def _run_listing(run_id: int, title: str, created_at: str) -> dict:
+    return {
+        "data": {
+            "data": {"id": 1, "name": "Корень", "isFolder": True},
+            "children": [
+                {
+                    "data": {
+                        "id": run_id,
+                        "name": title,
+                        "createdAt": created_at,
+                    }
+                }
+            ],
+        }
+    }

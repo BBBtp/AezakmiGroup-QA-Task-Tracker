@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 
+DEFAULT_DOQA_SPACE_IDS = (2, 4, 6)
+
+
 @dataclass(slots=True)
 class Settings:
     bot_token: str
@@ -22,7 +25,7 @@ class Settings:
     web_port: int = 8080
     web_base_url: str = "http://127.0.0.1:8080/miniapp"
     doqa_parser_output_dir: Path = Path("task_tracker_data/doqa_runs")
-    doqa_parser_max_input_mb: int = 20
+    doqa_parser_max_input_mb: int = 40
     doqa_parser_max_pages: int = 250
     doqa_parser_concurrency: int = 1
     doqa_parser_allowed_usernames: tuple[str, ...] = ()
@@ -30,6 +33,7 @@ class Settings:
     doqa_api_token: str | None = None
     doqa_report_url_template: str | None = None
     doqa_space_id: int | None = None
+    doqa_space_ids: tuple[int, ...] = DEFAULT_DOQA_SPACE_IDS
     doqa_api_timeout_seconds: int = 60
     doqa_report_retry_delays_seconds: tuple[int, ...] = (15, 60, 180)
     doqa_pdf_font_path: Path | None = None
@@ -79,6 +83,17 @@ def load_settings() -> Settings:
     doqa_report_url_template = getenv("DOQA_REPORT_URL_TEMPLATE", "").strip() or None
     configured_space_id = getenv("DOQA_SPACE_ID", "").strip()
     doqa_space_id = int(configured_space_id) if configured_space_id else None
+    configured_space_ids = getenv(
+        "DOQA_SPACE_IDS",
+        ",".join(str(space_id) for space_id in DEFAULT_DOQA_SPACE_IDS),
+    )
+    doqa_space_ids = tuple(
+        dict.fromkeys(
+            int(value.strip())
+            for value in configured_space_ids.split(",")
+            if value.strip()
+        )
+    )
     doqa_api_timeout_seconds = max(5, int(getenv("DOQA_API_TIMEOUT_SECONDS", "60")))
     doqa_report_retry_delays_seconds = tuple(
         max(1, int(value.strip()))
@@ -114,6 +129,10 @@ def load_settings() -> Settings:
         raise ValueError(
             "DOQA_SPACE_ID is required when it cannot be inferred from DOQA_REPORT_URL_TEMPLATE"
         )
+    if any(space_id <= 0 for space_id in doqa_space_ids):
+        raise ValueError("DOQA_SPACE_IDS must contain positive integers")
+    if doqa_base_url and not doqa_space_ids:
+        doqa_space_ids = (doqa_space_id,) if doqa_space_id is not None else ()
     if bool(qadb_url) != bool(qadb_service_key):
         raise ValueError("QADB_URL and QADB_SERVICE_KEY must be configured together")
     if qadb_url:
@@ -141,6 +160,7 @@ def load_settings() -> Settings:
         doqa_api_token=doqa_api_token,
         doqa_report_url_template=doqa_report_url_template,
         doqa_space_id=doqa_space_id,
+        doqa_space_ids=doqa_space_ids,
         doqa_api_timeout_seconds=doqa_api_timeout_seconds,
         doqa_report_retry_delays_seconds=doqa_report_retry_delays_seconds,
         doqa_pdf_font_path=doqa_pdf_font_path,

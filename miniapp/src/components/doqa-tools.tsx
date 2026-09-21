@@ -1,34 +1,51 @@
-import { useRef, useState } from "react"
-import { Download, FileArchive, FileUp, Loader2 } from "lucide-react"
+import { useMemo, useState } from "react"
+import { Download, FileArchive, Loader2, Search } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import type { TaskSummary } from "@/types"
+
 type Notice = { kind: "success" | "error"; text: string } | null
 
-export function DoqaTools() {
-  const [pdfFile, setPdfFile] = useState<File | null>(null)
-  const [pdfBusy, setPdfBusy] = useState(false)
+export function DoqaTools({ tasks }: { tasks: TaskSummary[] }) {
+  const [externalId, setExternalId] = useState("")
+  const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const suggestions = useMemo(
+    () =>
+      Array.from(new Map(tasks.map((task) => [task.task_number, task])).values()).sort(
+        (left, right) => right.task_number - left.task_number,
+      ),
+    [tasks],
+  )
 
-  async function parsePdf() {
-    if (!pdfFile) {
-      setNotice({ kind: "error", text: "Сначала выберите PDF-отчёт." })
+  async function createReport() {
+    const parsedId = Number(externalId.trim())
+    if (!Number.isSafeInteger(parsedId) || parsedId <= 0) {
+      setNotice({ kind: "error", text: "Укажите числовой ID приложения." })
       return
     }
-    setPdfBusy(true)
+
+    setBusy(true)
     setNotice(null)
     try {
-      const form = new FormData()
-      form.append("file", pdfFile)
-      const response = await fetch("/api/doqa/parse-pdf", { method: "POST", body: form })
-      await downloadResponse(response, "doqa_parsed.zip")
-      const count = response.headers.get("X-DoQA-Bug-Count") ?? "0"
-      setNotice({ kind: "success", text: `ZIP готов. Открытых багов: ${count}. В QADB ничего не отправлено.` })
+      const response = await fetch("/api/doqa/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ external_id: parsedId }),
+      })
+      await downloadResponse(response, `doqa_${parsedId}.zip`)
+      const bugCount = response.headers.get("X-DoQA-Bug-Count") ?? "0"
+      const runId = response.headers.get("X-DoQA-Run-ID")
+      setNotice({
+        kind: "success",
+        text: `ZIP готов${runId ? ` из прогона #${runId}` : ""}. Открытых багов: ${bugCount}. В QADB и БД задач ничего не отправлено.`,
+      })
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Не удалось обработать PDF." })
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Не удалось получить отчёт." })
     } finally {
-      setPdfBusy(false)
+      setBusy(false)
     }
   }
 
@@ -38,40 +55,59 @@ export function DoqaTools() {
         <CardContent className="space-y-5 p-5 sm:p-6">
           <div className="flex items-start gap-3">
             <div className="rounded-2xl border border-primary/25 bg-primary/10 p-3 text-primary">
-              <FileUp className="h-6 w-6" />
+              <FileArchive className="h-6 w-6" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">Распарсить PDF</h2>
-              <p className="mt-1 text-sm leading-6 text-zinc-400">Загрузите экспорт DoQA и получите ZIP с JSON, Markdown, DOCX и вложениями.</p>
+              <h2 className="text-lg font-semibold text-white">Получить ZIP из DoQA</h2>
+              <p className="mt-1 text-sm leading-6 text-zinc-400">
+                Укажите ID приложения. Бот найдёт самый свежий подходящий прогон и соберёт архив с открытыми багами.
+              </p>
             </div>
           </div>
 
-          <input
-            ref={fileInputRef}
-            accept="application/pdf,.pdf"
-            className="hidden"
-            onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)}
-            type="file"
-          />
-          <button
-            className="flex min-h-32 w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-primary/30 bg-zinc-950 px-5 py-6 text-center transition hover:border-primary/60 hover:bg-primary/5"
-            onClick={() => fileInputRef.current?.click()}
-            type="button"
-          >
-            <FileArchive className="h-7 w-7 text-primary" />
-            <span className="max-w-full truncate text-sm font-medium text-white">{pdfFile?.name || "Выбрать PDF-файл"}</span>
-            <span className="text-xs text-zinc-500">Лимит размера задаётся сервером</span>
-          </button>
-          <Button className="w-full gap-2" disabled={pdfBusy} onClick={() => void parsePdf()}>
-            {pdfBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {pdfBusy ? "Разбираю отчёт..." : "Распарсить и скачать ZIP"}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-200" htmlFor="doqa-external-id">
+              ID приложения
+            </label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Input
+                autoComplete="off"
+                className="h-12 pl-10"
+                disabled={busy}
+                id="doqa-external-id"
+                inputMode="numeric"
+                list="doqa-app-suggestions"
+                onChange={(event) => setExternalId(event.target.value.replace(/\D/g, ""))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void createReport()
+                }}
+                placeholder="Например, 467"
+                value={externalId}
+              />
+              <datalist id="doqa-app-suggestions">
+                {suggestions.map((task) => (
+                  <option key={task.id} value={task.task_number}>
+                    {task.app_name || task.title}
+                  </option>
+                ))}
+              </datalist>
+            </div>
+            <p className="text-xs leading-5 text-zinc-500">
+              Поиск идёт по пространствам: Фаст-трек, Flutter и Native.
+            </p>
+          </div>
+
+          <Button className="w-full gap-2" disabled={busy} onClick={() => void createReport()}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {busy ? "Ищу прогон и собираю ZIP..." : "Найти прогон и скачать ZIP"}
           </Button>
         </CardContent>
       </Card>
 
       <Card className="border-primary/20 bg-black/70">
-        <CardContent className="p-4 text-sm text-zinc-400">
-          <span className="font-medium text-white">Ручной режим:</span> ZIP только скачивается пользователю. Такие отчёты не записываются в QADB и не создают события в базе задач.
+        <CardContent className="p-4 text-sm leading-6 text-zinc-400">
+          <span className="font-medium text-white">Ручной режим:</span> архив только скачивается пользователю. Такие запросы не записываются в QADB и не создают событий в базе задач.
         </CardContent>
       </Card>
 
@@ -86,9 +122,6 @@ export function DoqaTools() {
 
 async function downloadResponse(response: Response, fallbackName: string) {
   if (!response.ok) {
-    if (response.status === 413) {
-      throw new Error("PDF превышает допустимый размер либо ограничение загрузки nginx.")
-    }
     let message = `Ошибка сервера: HTTP ${response.status}`
     try {
       const payload = await response.json() as { error?: string }

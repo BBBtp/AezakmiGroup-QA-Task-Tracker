@@ -28,6 +28,13 @@ from bot.services.task_service import TaskService
 from bot.web import create_web_app
 
 
+DOQA_SPACE_PROJECT_IDS = {
+    2: 2,  # Fast-track: /detail/2/2/runs
+    4: 3,  # Flutter: /detail/3/4/runs
+    6: 5,  # Native: /detail/5/6/runs
+}
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
@@ -62,6 +69,7 @@ async def main() -> None:
         concurrency=settings.doqa_parser_concurrency,
     )
     doqa_report_queue: DoqaReportQueue | None = None
+    manual_doqa_report_service: DoqaReportService | None = None
     with session_factory() as session:
         updated_tasks = task_service.backfill_existing_tasks(session)
         session.commit()
@@ -84,6 +92,14 @@ async def main() -> None:
         )
     )
     if settings.doqa_base_url and settings.doqa_api_token and settings.doqa_report_url_template:
+        report_url_templates = {
+            space_id: (
+                f"{settings.doqa_base_url}/ru/home/detail/{project_id}/{space_id}/runs/"
+                "{run_id}"
+            )
+            for space_id, project_id in DOQA_SPACE_PROJECT_IDS.items()
+            if space_id in settings.doqa_space_ids
+        }
         doqa_client = DoqaClient(
             settings.doqa_base_url,
             settings.doqa_api_token,
@@ -108,6 +124,21 @@ async def main() -> None:
             font_path=settings.doqa_pdf_font_path,
             concurrency=settings.doqa_parser_concurrency,
             qadb_ingestor=qadb_ingestor,
+            report_url_templates=report_url_templates,
+        )
+        manual_doqa_client = DoqaClient(
+            settings.doqa_base_url,
+            settings.doqa_api_token,
+            space_ids=settings.doqa_space_ids,
+            timeout_seconds=settings.doqa_api_timeout_seconds,
+        )
+        manual_doqa_report_service = DoqaReportService(
+            manual_doqa_client,
+            doqa_pdf_service,
+            settings.doqa_report_url_template,
+            font_path=settings.doqa_pdf_font_path,
+            concurrency=settings.doqa_parser_concurrency,
+            report_url_templates=report_url_templates,
         )
         doqa_report_queue = DoqaReportQueue(
             bot,
@@ -124,6 +155,11 @@ async def main() -> None:
             )
         )
         logging.info("DoQA report command is enabled")
+        logging.info("Automatic /zip reports search space=%s", settings.doqa_space_id)
+        logging.info(
+            "Manual DoQA reports search spaces=%s and never publish to QADB",
+            settings.doqa_space_ids,
+        )
     else:
         logging.info("DoQA report command is disabled: API settings are not configured")
     dispatcher.include_router(
@@ -141,7 +177,7 @@ async def main() -> None:
         session_factory,
         broadcaster,
         settings,
-        doqa_pdf_service=doqa_pdf_service,
+        doqa_report_service=manual_doqa_report_service,
     )
     runner = web.AppRunner(web_app)
     await runner.setup()

@@ -3,6 +3,7 @@ export type TaskStatus = "assigned" | "done" | "paused"
 export type TaskSummary = {
   id: number
   task_key: string
+  task_number: number
   app_name: string | null
   title: string
   status: TaskStatus

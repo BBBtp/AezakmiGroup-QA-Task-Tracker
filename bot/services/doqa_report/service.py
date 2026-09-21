@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from bot.integrations.doqa import DoqaClient
 from bot.integrations.qadb import QadbReportIngestor
@@ -38,12 +39,14 @@ class DoqaReportService:
         font_path: Path | None = None,
         concurrency: int = 1,
         qadb_ingestor: QadbReportIngestor | None = None,
+        report_url_templates: Mapping[int, str] | None = None,
     ) -> None:
         self.client = client
         self.pdf_parser = pdf_parser
         self.report_url_template = report_url_template
         self.font_path = font_path
         self.qadb_ingestor = qadb_ingestor
+        self.report_url_templates = dict(report_url_templates or {})
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def create_report(self, external_id: int) -> DoqaReportResult:
@@ -80,7 +83,7 @@ class DoqaReportService:
                 run_id=actual_run_id,
                 title=str(report.get("title") or f"Прогон #{actual_run_id}"),
                 archive_path=parsed.archive_path,
-                run_url=self.report_url_template.format(run_id=actual_run_id),
+                run_url=self._build_run_url(found_run, actual_run_id),
                 test_count=int(report.get("testCount") or 0),
                 bug_count=int(report.get("bugCount") or 0),
                 parsed_bug_count=len(parsed.report.bugs),
@@ -89,3 +92,9 @@ class DoqaReportService:
 
     def cleanup(self, result: DoqaReportResult) -> None:
         self.pdf_parser.cleanup(result.parser_run)
+
+    def _build_run_url(self, found_run: dict, run_id: int) -> str:
+        space_id = found_run.get("_space_id")
+        template = self.report_url_templates.get(space_id, self.report_url_template)
+        resolved_space_id = space_id or getattr(self.client, "space_id", "")
+        return template.format(run_id=run_id, space_id=resolved_space_id)
