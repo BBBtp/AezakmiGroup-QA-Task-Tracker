@@ -86,6 +86,9 @@ export function DoqaTools() {
 
 async function downloadResponse(response: Response, fallbackName: string) {
   if (!response.ok) {
+    if (response.status === 413) {
+      throw new Error("PDF превышает допустимый размер либо ограничение загрузки nginx.")
+    }
     let message = `Ошибка сервера: HTTP ${response.status}`
     try {
       const payload = await response.json() as { error?: string }

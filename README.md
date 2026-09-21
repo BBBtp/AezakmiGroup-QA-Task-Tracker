@@ -56,7 +56,7 @@ PDF пользователю не отправляется и удаляется
 Настройки парсера:
 
 - `DOQA_PARSER_OUTPUT_DIR` — временная директория, по умолчанию `task_tracker_data/doqa_runs`;
-- `DOQA_PARSER_MAX_INPUT_MB` — максимальный размер входного файла, по умолчанию 20 МБ;
+- `DOQA_PARSER_MAX_INPUT_MB` — максимальный размер входного файла, по умолчанию 40 МБ;
 - `DOQA_PARSER_MAX_PAGES` — максимальное число страниц, по умолчанию 250;
 - `DOQA_PARSER_CONCURRENCY` — число одновременно обрабатываемых PDF, по умолчанию 1;
 - `DOQA_PARSER_ALLOWED_USERNAMES` — usernames через запятую. Если не задано, используется

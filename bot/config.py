@@ -65,7 +65,7 @@ def load_settings() -> Settings:
         getenv("DOQA_PARSER_OUTPUT_DIR", "task_tracker_data/doqa_runs").strip()
         or "task_tracker_data/doqa_runs"
     )
-    doqa_parser_max_input_mb = max(1, int(getenv("DOQA_PARSER_MAX_INPUT_MB", "20")))
+    doqa_parser_max_input_mb = max(1, int(getenv("DOQA_PARSER_MAX_INPUT_MB", "40")))
     doqa_parser_max_pages = max(1, int(getenv("DOQA_PARSER_MAX_PAGES", "250")))
     doqa_parser_concurrency = max(1, int(getenv("DOQA_PARSER_CONCURRENCY", "1")))
     configured_parser_users = tuple(
