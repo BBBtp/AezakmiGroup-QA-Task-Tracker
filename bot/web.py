@@ -7,7 +7,9 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
@@ -26,6 +28,17 @@ from bot.services.task_service import TaskService
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MINIAPP_DIST = REPO_ROOT / "miniapp" / "dist"
 SESSION_COOKIE_NAME = "miniapp_auth"
+DOQA_DOWNLOAD_TTL_SECONDS = 10 * 60
+DOQA_MAX_PENDING_DOWNLOADS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDoqaDownload:
+    data: bytes
+    filename: str
+    bug_count: int
+    run_id: int
+    expires_at: float
 
 
 def create_web_app(
@@ -40,6 +53,7 @@ def create_web_app(
     app["broadcaster"] = broadcaster
     app["settings"] = settings
     app["doqa_report_service"] = doqa_report_service
+    app["doqa_downloads"] = {}
     app.router.add_get("/", root_handler)
     app.router.add_get("/miniapp", miniapp_handler)
     app.router.add_get("/miniapp/{tail:.*}", miniapp_handler)
@@ -52,6 +66,7 @@ def create_web_app(
     app.router.add_post("/api/tasks/{task_id:\\d+}/restore", restore_task_handler)
     app.router.add_delete("/api/tasks/{task_id:\\d+}", delete_task_handler)
     app.router.add_post("/api/doqa/report", doqa_report_handler)
+    app.router.add_get("/api/doqa/download/{token}", doqa_download_handler)
     return app
 
 
@@ -71,11 +86,26 @@ async def doqa_report_handler(request: web.Request) -> web.Response:
             raise ValueError
         result = await service.create_report(external_id)
         archive = await asyncio.to_thread(result.archive_path.read_bytes)
-        return _zip_response(
-            archive,
-            filename=f"doqa_{external_id}_run_{result.run_id}.zip",
-            bug_count=result.parsed_bug_count,
-            run_id=result.run_id,
+        filename = f"doqa_{external_id}_run_{result.run_id}.zip"
+        token = _store_doqa_download(
+            request.app,
+            PendingDoqaDownload(
+                data=archive,
+                filename=filename,
+                bug_count=result.parsed_bug_count,
+                run_id=result.run_id,
+                expires_at=time.monotonic() + DOQA_DOWNLOAD_TTL_SECONDS,
+            ),
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "download_url": f"/api/doqa/download/{token}",
+                "filename": filename,
+                "bug_count": result.parsed_bug_count,
+                "run_id": result.run_id,
+                "expires_in_seconds": DOQA_DOWNLOAD_TTL_SECONDS,
+            }
         )
     except (TypeError, ValueError, web.HTTPBadRequest):
         return _api_error("Укажите корректный числовой ID приложения", status=400)
@@ -92,6 +122,45 @@ async def doqa_report_handler(request: web.Request) -> web.Response:
             await asyncio.to_thread(service.cleanup, result)
 
 
+async def doqa_download_handler(request: web.Request) -> web.Response:
+    download = _get_doqa_download(request.app, request.match_info["token"])
+    if download is None:
+        return _api_error("Ссылка на ZIP устарела. Сформируйте отчёт ещё раз", status=404)
+    return _zip_response(
+        download.data,
+        filename=download.filename,
+        bug_count=download.bug_count,
+        run_id=download.run_id,
+    )
+
+
+def _store_doqa_download(app: web.Application, download: PendingDoqaDownload) -> str:
+    downloads: dict[str, PendingDoqaDownload] = app["doqa_downloads"]
+    _purge_doqa_downloads(downloads)
+    while len(downloads) >= DOQA_MAX_PENDING_DOWNLOADS:
+        oldest_token = min(downloads, key=lambda token: downloads[token].expires_at)
+        downloads.pop(oldest_token, None)
+    token = secrets.token_urlsafe(32)
+    downloads[token] = download
+    return token
+
+
+def _get_doqa_download(
+    app: web.Application,
+    token: str,
+) -> PendingDoqaDownload | None:
+    downloads: dict[str, PendingDoqaDownload] = app["doqa_downloads"]
+    _purge_doqa_downloads(downloads)
+    return downloads.get(token)
+
+
+def _purge_doqa_downloads(downloads: dict[str, PendingDoqaDownload]) -> None:
+    now = time.monotonic()
+    for token, download in tuple(downloads.items()):
+        if download.expires_at <= now:
+            downloads.pop(token, None)
+
+
 def _zip_response(data: bytes, *, filename: str, bug_count: int, run_id: int) -> web.Response:
     return web.Response(
         body=data,
@@ -100,6 +169,7 @@ def _zip_response(data: bytes, *, filename: str, bug_count: int, run_id: int) ->
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-DoQA-Bug-Count": str(bug_count),
             "X-DoQA-Run-ID": str(run_id),
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -111,7 +181,8 @@ def _api_error(message: str, *, status: int) -> web.Response:
 @web.middleware
 async def miniapp_auth_middleware(request: web.Request, handler):
     path = request.path
-    if path.startswith("/api/") and path != "/api/auth/telegram":
+    public_download = path.startswith("/api/doqa/download/")
+    if path.startswith("/api/") and path != "/api/auth/telegram" and not public_download:
         session = read_auth_session(request)
         if session is None:
             raise web.HTTPUnauthorized(
