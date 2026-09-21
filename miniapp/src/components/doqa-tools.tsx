@@ -4,6 +4,7 @@ import { ChevronDown, Download, FileArchive, Loader2, Search } from "lucide-reac
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { requestTelegramFileDownload } from "@/lib/telegram"
 import type { TaskSummary } from "@/types"
 
 type Notice = { kind: "success" | "error"; text: string } | null
@@ -186,14 +187,14 @@ export function DoqaTools({ tasks }: { tasks: TaskSummary[] }) {
         <div className={`space-y-3 rounded-2xl border px-4 py-3 text-sm ${notice.kind === "success" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-rose-500/30 bg-rose-500/10 text-rose-200"}`}>
           <p>{notice.text}</p>
           {download ? (
-            <a
+            <button
               className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 font-medium text-emerald-950 transition hover:bg-emerald-300"
-              download={download.filename}
-              href={download.download_url}
+              onClick={() => startDownload(download)}
+              type="button"
             >
               <Download className="h-4 w-4" />
               Скачать готовый ZIP
-            </a>
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -224,8 +225,12 @@ async function readReportResponse(response: Response): Promise<DownloadInfo> {
 }
 
 function startDownload(download: DownloadInfo) {
+  const url = new URL(download.download_url, window.location.origin).toString()
+  if (requestTelegramFileDownload(url, download.filename)) {
+    return
+  }
   const link = document.createElement("a")
-  link.href = download.download_url
+  link.href = url
   link.download = download.filename
   document.body.appendChild(link)
   link.click()

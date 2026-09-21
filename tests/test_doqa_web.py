@@ -74,6 +74,10 @@ class DoqaWebDownloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(download_response.body, b"zip-content")
             self.assertEqual(download_response.content_type, "application/zip")
             self.assertIn("doqa_467_run_812.zip", download_response.headers["Content-Disposition"])
+            self.assertEqual(
+                download_response.headers["Access-Control-Allow-Origin"],
+                "https://web.telegram.org",
+            )
 
     async def test_token_download_does_not_require_miniapp_cookie(self) -> None:
         request = FakeRequest({}, token="secret-token")

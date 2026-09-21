@@ -7,6 +7,10 @@ type TelegramWebApp = {
   setBackgroundColor?: (color: string) => void
   themeParams?: TelegramThemeParams
   colorScheme?: "light" | "dark"
+  downloadFile?: (
+    params: { url: string; file_name: string },
+    callback?: (accepted: boolean) => void,
+  ) => void
   initData?: string
   initDataUnsafe?: {
     user?: {
@@ -62,4 +66,13 @@ export function getCurrentTelegramUsername() {
 
 export function getTelegramInitData() {
   return window.Telegram?.WebApp?.initData?.trim() ?? ""
+}
+
+export function requestTelegramFileDownload(url: string, filename: string) {
+  const webApp = window.Telegram?.WebApp
+  if (!webApp?.downloadFile) {
+    return false
+  }
+  webApp.downloadFile({ url, file_name: filename })
+  return true
 }

@@ -170,6 +170,7 @@ def _zip_response(data: bytes, *, filename: str, bug_count: int, run_id: int) ->
             "X-DoQA-Bug-Count": str(bug_count),
             "X-DoQA-Run-ID": str(run_id),
             "Cache-Control": "private, no-store",
+            "Access-Control-Allow-Origin": "https://web.telegram.org",
         },
     )
 
