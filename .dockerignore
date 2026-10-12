@@ -10,4 +10,9 @@ __pycache__
 bot.db
 miniapp/node_modules
 miniapp/dist
+office/node_modules
+office/dist
+office/.cache
+office/.playwright-cli
+office/output
 telegram_task_parser_bot.egg-info

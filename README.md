@@ -3,6 +3,40 @@
 Telegram-бот на aiogram для извлечения и отслеживания задач из сообщений. В одном процессе
 он запускает polling Telegram и aiohttp-приложение для Mini App.
 
+## Agent Office и Codex на Mac
+
+`miniapp/` остаётся точкой входа Telegram. Раздел «Codex» создаёт только задание на
+проверку ключа Tracker в режиме чтения. `office/` содержит перенесённый интерфейс
+Agent Office и собирается в том же Nginx-контейнере по адресу `/office/`.
+Серверные `/api/agent-runs` показывают очищенную трассу, которую Mac передаёт по
+HTTPS; отдельный публичный сервер Agent Office не нужен. Один UUID служит ID задания
+в BotParser и `runId` в CRM-телеметрии. База BotParser хранит проекцию manifest и
+событий для просмотра, а MinIO — отдельный архив. Поэтому BotParser и MinIO могут
+работать на разных серверах, а Codex CLI остаётся на Mac.
+
+Включение канала требует `CODEX_ALLOWED_USER_IDS` со списком числовых Telegram ID и
+отдельного случайного `CODEX_WORKER_TOKEN` в серверном `.env`. Без списка ID API
+заданий и трасс закрыт. Worker использует этот токен только при обращении к
+`https://<адрес BotParser>/api/codex/worker/`; браузеру токен не передаётся.
+Значение токена хранится отдельно на Mac как `CODEX_CHANNEL_WORKER_TOKEN`.
+
+На Mac в CRM-проекте запустите `npm run factory:office-worker` с настройками
+`CODEX_CHANNEL_BASE_URL` (HTTPS-адрес BotParser) и `CODEX_CHANNEL_WORKTREE`
+(проверенный Git checkout CRM). Worker сам опрашивает очередь и не открывает порт
+на Mac. Пока Mac спит или worker остановлен, новые задания остаются в очереди.
+Если heartbeat текущего задания старше 90 секунд, BotParser показывает неизвестное
+состояние; автоматического повторного запуска нет, чтобы избежать дублей.
+Завершённый результат worker сохраняет локально до успешной доставки на сервер.
+Для публикации архива MinIO дополнительно нужны `AGENT_MINIO_*` и доступ к MinIO;
+очередь и Agent Office по BotParser продолжают работать, если архив недоступен.
+
+При наличии защищённого сетевого маршрута от BotParser к MinIO можно задать
+`OFFICE_MINIO_ENDPOINT`, `OFFICE_MINIO_BUCKET`, `OFFICE_MINIO_ACCESS_KEY` и
+`OFFICE_MINIO_SECRET_KEY` с правами чтения только `factory/events/` и
+`factory/agent-runs/v1/`. Это включает архивные источники в Agent Office.
+MinIO не нужно открывать публично. Текущий первый сценарий не создаёт PR,
+не меняет файлы, Tracker или DoQA и не заменяет обычный чат Codex.
+
 ## Запуск
 
 Требуется Python 3.11+ и PostgreSQL либо SQLite для локальной разработки.
