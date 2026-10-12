@@ -4,6 +4,7 @@ import { ArrowLeft, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Loader
 import { TaskCard } from "@/components/task-card"
 import { TaskDetailPanel } from "@/components/task-detail"
 import { DoqaTools } from "@/components/doqa-tools"
+import { CodexJobs } from "@/components/codex-jobs"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -34,7 +35,7 @@ export default function App() {
     ["Глеб", "Глеб"],
   ] as const
   const [archiveView, setArchiveView] = useState(false)
-  const [appSection, setAppSection] = useState<"tasks" | "doqa">("tasks")
+  const [appSection, setAppSection] = useState<"tasks" | "doqa" | "codex">("tasks")
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null)
@@ -514,6 +515,13 @@ export default function App() {
             type="button"
           >
             DoQA отчёты
+          </button>
+          <button
+            className={`flex-1 rounded-full px-5 py-2.5 text-sm font-medium transition sm:flex-none ${appSection === "codex" ? "bg-primary text-black" : "text-white hover:bg-white/5"}`}
+            onClick={() => setAppSection("codex")}
+            type="button"
+          >
+            Codex
           </button>
         </div>
 
@@ -1120,8 +1128,10 @@ export default function App() {
           )}
         </section>
           </>
-        ) : (
+        ) : appSection === "doqa" ? (
           <DoqaTools tasks={tasks} />
+        ) : (
+          <CodexJobs />
         )}
       </div>
     </div>

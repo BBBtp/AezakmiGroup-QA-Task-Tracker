@@ -21,6 +21,9 @@ htmlcov/
 node_modules/
 miniapp/node_modules/
 miniapp/dist/
+office/dist/
+office/node_modules/
+office/.cache/
 
 .idea/
 .vscode/

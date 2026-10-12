@@ -41,6 +41,13 @@ class Settings:
     qadb_service_key: str | None = None
     qadb_report_timezone: str = "+03:00"
     qadb_timeout_seconds: int = 60
+    codex_worker_token: str | None = None
+    codex_allowed_user_ids: tuple[int, ...] = ()
+    office_minio_endpoint: str | None = None
+    office_minio_bucket: str | None = None
+    office_minio_access_key: str | None = None
+    office_minio_secret_key: str | None = None
+    office_minio_region: str = "us-east-1"
 
 
 def load_settings() -> Settings:
@@ -106,6 +113,17 @@ def load_settings() -> Settings:
     qadb_service_key = getenv("QADB_SERVICE_KEY", "").strip() or None
     qadb_report_timezone = getenv("QADB_REPORT_TZ", "+03:00").strip() or "+03:00"
     qadb_timeout_seconds = max(5, int(getenv("QADB_TIMEOUT_SECONDS", "60")))
+    codex_worker_token = getenv("CODEX_WORKER_TOKEN", "").strip() or None
+    codex_allowed_user_ids = tuple(
+        int(value.strip())
+        for value in getenv("CODEX_ALLOWED_USER_IDS", "").split(",")
+        if value.strip()
+    )
+    office_minio_endpoint = getenv("OFFICE_MINIO_ENDPOINT", "").strip() or None
+    office_minio_bucket = getenv("OFFICE_MINIO_BUCKET", "").strip() or None
+    office_minio_access_key = getenv("OFFICE_MINIO_ACCESS_KEY", "").strip() or None
+    office_minio_secret_key = getenv("OFFICE_MINIO_SECRET_KEY", "").strip() or None
+    office_minio_region = getenv("OFFICE_MINIO_REGION", "us-east-1").strip() or "us-east-1"
     doqa_values = (doqa_base_url, doqa_api_token, doqa_report_url_template)
     if any(doqa_values) and not all(doqa_values):
         raise ValueError(
@@ -168,4 +186,11 @@ def load_settings() -> Settings:
         qadb_service_key=qadb_service_key,
         qadb_report_timezone=qadb_report_timezone,
         qadb_timeout_seconds=qadb_timeout_seconds,
+        codex_worker_token=codex_worker_token,
+        codex_allowed_user_ids=codex_allowed_user_ids,
+        office_minio_endpoint=office_minio_endpoint,
+        office_minio_bucket=office_minio_bucket,
+        office_minio_access_key=office_minio_access_key,
+        office_minio_secret_key=office_minio_secret_key,
+        office_minio_region=office_minio_region,
     )

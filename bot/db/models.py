@@ -46,6 +46,14 @@ class DoqaReportJobStatus(str, Enum):
     FAILED = "failed"
 
 
+class CodexJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -155,3 +163,36 @@ class DoqaReportJob(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class CodexJob(Base):
+    __tablename__ = "codex_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(40), index=True)
+    requested_by_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    status: Mapped[CodexJobStatus] = mapped_column(SqlEnum(CodexJobStatus), index=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telemetry_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CodexRunSnapshot(Base):
+    __tablename__ = "codex_run_snapshots"
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(40), index=True)
+    manifest_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CodexRunEvent(Base):
+    __tablename__ = "codex_run_events"
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text)
