@@ -19,8 +19,6 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import joinedload, sessionmaker
 
 from bot.config import Settings
-from bot import codex_channel
-from bot import office_data
 from bot.db.models import Chat, Task, TaskEventType
 from bot.integrations.doqa import DoqaApiError
 from bot.live_updates import LiveUpdateBroadcaster
@@ -56,20 +54,10 @@ def create_web_app(
     app["settings"] = settings
     app["doqa_report_service"] = doqa_report_service
     app["doqa_downloads"] = {}
-    app["office_reader"] = office_data.create_reader(settings)
     app.router.add_get("/", root_handler)
     app.router.add_get("/miniapp", miniapp_handler)
     app.router.add_get("/miniapp/{tail:.*}", miniapp_handler)
     app.router.add_post("/api/auth/telegram", telegram_auth_handler)
-    app.router.add_get("/api/codex/jobs", codex_channel.list_jobs)
-    app.router.add_post("/api/codex/jobs", codex_channel.create_job)
-    app.router.add_post("/api/codex/worker/claim", codex_channel.claim_job)
-    app.router.add_post("/api/codex/worker/jobs/{job_id}/heartbeat", codex_channel.heartbeat_job)
-    app.router.add_post("/api/codex/worker/jobs/{job_id}/complete", codex_channel.complete_job)
-    app.router.add_put("/api/codex/worker/jobs/{job_id}/telemetry", codex_channel.upload_telemetry)
-    app.router.add_get("/api/agent-runs", office_data.list_runs)
-    app.router.add_get("/api/agent-runs/{issue_key}/{run_id}/events", office_data.run_events)
-    app.router.add_get("/api/factory-events", office_data.factory_events)
     app.router.add_get("/api/tasks", tasks_handler)
     app.router.add_get("/api/chats", chats_handler)
     app.router.add_get("/api/stream", events_handler)
@@ -195,8 +183,7 @@ def _api_error(message: str, *, status: int) -> web.Response:
 async def miniapp_auth_middleware(request: web.Request, handler):
     path = request.path
     public_download = path.startswith("/api/doqa/download/")
-    worker_route = path.startswith("/api/codex/worker/")
-    if path.startswith("/api/") and path != "/api/auth/telegram" and not public_download and not worker_route:
+    if path.startswith("/api/") and path != "/api/auth/telegram" and not public_download:
         session = read_auth_session(request)
         if session is None:
             raise web.HTTPUnauthorized(
