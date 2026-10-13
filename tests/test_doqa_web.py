@@ -12,6 +12,7 @@ from aiohttp import web
 from bot.web import (
     PendingDoqaDownload,
     _get_doqa_download,
+    create_web_app,
     doqa_download_handler,
     doqa_report_handler,
     miniapp_auth_middleware,
@@ -46,6 +47,15 @@ class FakeManualReportService:
 
 
 class DoqaWebDownloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_archived_agent_office_routes_are_not_registered(self) -> None:
+        app = create_web_app(None, None, SimpleNamespace())  # type: ignore[arg-type]
+        paths = {route.resource.canonical for route in app.router.routes()}
+
+        self.assertIn("/api/tasks", paths)
+        self.assertFalse(any(path.startswith("/api/codex/") for path in paths))
+        self.assertFalse(any(path.startswith("/api/agent-runs") for path in paths))
+        self.assertNotIn("/api/factory-events", paths)
+
     async def test_manual_report_returns_https_compatible_download_url(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive_path = Path(directory) / "report.zip"
