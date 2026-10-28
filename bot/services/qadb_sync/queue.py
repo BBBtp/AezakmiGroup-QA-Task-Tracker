@@ -27,6 +27,11 @@ SCHEDULABLE_STATUSES = (
     QadbSyncJobStatus.RETRYING,
 )
 NON_TERMINAL_STATUSES = (*SCHEDULABLE_STATUSES, QadbSyncJobStatus.PROCESSING)
+ACTIVE_REPORT_STATUSES = (
+    DoqaReportJobStatus.QUEUED,
+    DoqaReportJobStatus.PROCESSING,
+    DoqaReportJobStatus.RETRYING,
+)
 
 
 class GeneratedDoqaReport(Protocol):
@@ -90,10 +95,9 @@ class QadbSyncQueue:
         self._closed = True
         self._wake.set()
         worker = self._worker
-        self._worker = None
         if worker is not None:
-            worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+        self._worker = None
 
     async def stage(
         self,
@@ -104,7 +108,20 @@ class QadbSyncQueue:
         self._wake.set()
         return stored
 
-    def load(self, report_job_id: int, *, verify: bool = True) -> StoredDoqaReport | None:
+    async def load(
+        self,
+        report_job_id: int,
+        *,
+        verify: bool = True,
+    ) -> StoredDoqaReport | None:
+        return await asyncio.to_thread(self._load, report_job_id, verify=verify)
+
+    def _load(
+        self,
+        report_job_id: int,
+        *,
+        verify: bool = True,
+    ) -> StoredDoqaReport | None:
         with self.session_factory() as session:
             job = session.scalar(
                 select(QadbSyncJob).where(QadbSyncJob.report_job_id == report_job_id)
@@ -119,15 +136,14 @@ class QadbSyncQueue:
     async def report_completed(self, report_job_id: int) -> None:
         try:
             await asyncio.to_thread(self._cleanup_if_delivered, report_job_id)
-        except SnapshotIntegrityError as error:
-            logging.error(
-                "QADB outbox cleanup skipped for report_job_id=%s: %s",
+        except Exception:
+            logging.exception(
+                "QADB outbox cleanup failed for report_job_id=%s",
                 report_job_id,
-                error,
             )
 
     def _stage(self, report_job_id: int, result: GeneratedDoqaReport) -> StoredDoqaReport:
-        existing = self.load(report_job_id)
+        existing = self._load(report_job_id)
         if existing is not None:
             return existing
 
@@ -188,27 +204,51 @@ class QadbSyncQueue:
         for report_job_id in report_job_ids:
             try:
                 self._cleanup_if_delivered(report_job_id)
-            except SnapshotIntegrityError as error:
-                logging.error(
-                    "QADB outbox startup cleanup skipped for report_job_id=%s: %s",
+            except Exception:
+                logging.exception(
+                    "QADB outbox startup cleanup failed for report_job_id=%s",
                     report_job_id,
-                    error,
                 )
 
     async def _run(self) -> None:
         while not self._closed:
-            self._wake.clear()
-            job_id, wait_seconds = await asyncio.to_thread(self._next_job)
-            if job_id is not None:
-                await self._process(job_id)
-                continue
+            job_id: int | None = None
             try:
-                if wait_seconds is None:
-                    await self._wake.wait()
-                else:
-                    await asyncio.wait_for(self._wake.wait(), timeout=max(0.001, wait_seconds))
-            except TimeoutError:
-                pass
+                self._wake.clear()
+                job_id, wait_seconds = await asyncio.to_thread(self._next_job)
+                if job_id is not None:
+                    await self._process(job_id)
+                    continue
+                try:
+                    if wait_seconds is None:
+                        await self._wake.wait()
+                    else:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=max(0.001, wait_seconds),
+                        )
+                except TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logging.exception("QADB sync worker iteration failed")
+                if job_id is not None:
+                    try:
+                        await asyncio.to_thread(
+                            self._recover_failed_iteration,
+                            job_id,
+                            error,
+                        )
+                    except Exception:
+                        logging.exception(
+                            "Failed to recover QADB sync job after worker error job_id=%s",
+                            job_id,
+                        )
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=1.0)
+                except TimeoutError:
+                    pass
 
     def _next_job(self) -> tuple[int | None, float | None]:
         with self.session_factory() as session:
@@ -216,9 +256,24 @@ class QadbSyncQueue:
                 session.scalars(
                     select(QadbSyncJob)
                     .where(QadbSyncJob.status.in_(NON_TERMINAL_STATUSES))
-                    .order_by(QadbSyncJob.id)
+                    .order_by(QadbSyncJob.report_job_id)
                 )
             )
+            blocked_report_job_ids = {
+                job.report_job_id
+                for job in jobs
+                if session.scalar(
+                    select(DoqaReportJob.id)
+                    .where(
+                        DoqaReportJob.id < job.report_job_id,
+                        DoqaReportJob.external_id == int(job.project_ref),
+                        DoqaReportJob.status.in_(ACTIVE_REPORT_STATUSES),
+                        ~DoqaReportJob.id.in_(select(QadbSyncJob.report_job_id)),
+                    )
+                    .limit(1)
+                )
+                is not None
+            }
 
         heads: dict[tuple[str, int], QadbSyncJob] = {}
         for job in jobs:
@@ -227,7 +282,11 @@ class QadbSyncQueue:
         now = _utcnow()
         ready: list[QadbSyncJob] = []
         delays: list[float] = []
+        has_blocked_head = False
         for job in heads.values():
+            if job.report_job_id in blocked_report_job_ids:
+                has_blocked_head = True
+                continue
             if job.status == QadbSyncJobStatus.PROCESSING:
                 continue
             delay = _delay_until(job.next_attempt_at, now)
@@ -236,7 +295,9 @@ class QadbSyncQueue:
             else:
                 delays.append(delay)
         if ready:
-            return min(ready, key=lambda job: job.id).id, 0.0
+            return min(ready, key=lambda job: job.report_job_id).id, 0.0
+        if has_blocked_head:
+            delays.append(1.0)
         return None, min(delays) if delays else None
 
     async def _process(self, job_id: int) -> None:
@@ -252,7 +313,7 @@ class QadbSyncQueue:
             stored = _stored_report(job)
 
         try:
-            _verify_snapshot(stored)
+            await asyncio.to_thread(_verify_snapshot, stored)
             await asyncio.to_thread(
                 self.ingestor.ingest,
                 stored.archive_path,
@@ -294,7 +355,14 @@ class QadbSyncQueue:
                 job.completed_at = _utcnow()
                 session.commit()
         logging.info("QADB sync completed job_id=%s attempt=%s", job_id, attempt)
-        await asyncio.to_thread(self._cleanup_if_delivered, stored.report_job_id)
+        try:
+            await asyncio.to_thread(self._cleanup_if_delivered, stored.report_job_id)
+        except Exception:
+            logging.exception(
+                "QADB outbox cleanup failed after sync job_id=%s report_job_id=%s",
+                job_id,
+                stored.report_job_id,
+            )
 
     def _mark_failed(self, job_id: int, error: Exception) -> None:
         with self.session_factory() as session:
@@ -304,6 +372,16 @@ class QadbSyncQueue:
                 job.last_error = _error_text(error)
                 job.next_attempt_at = None
                 session.commit()
+
+    def _recover_failed_iteration(self, job_id: int, error: Exception) -> None:
+        with self.session_factory() as session:
+            job = session.get(QadbSyncJob, job_id)
+            if job is None or job.status != QadbSyncJobStatus.PROCESSING:
+                return
+            job.status = QadbSyncJobStatus.RETRYING
+            job.last_error = _error_text(error)
+            job.next_attempt_at = _utcnow() + timedelta(seconds=1)
+            session.commit()
 
     def _cleanup_if_delivered(self, report_job_id: int) -> None:
         with self.session_factory() as session:
@@ -349,7 +427,8 @@ def _verify_snapshot(stored: StoredDoqaReport) -> None:
     actual_hash = _hash_file(stored.archive_path)
     if actual_hash != stored.content_hash:
         raise SnapshotIntegrityError(
-            f"SHA-256 снимка не совпадает: ожидался {stored.content_hash}, получен {actual_hash}"
+            "SHA-256 снимка не совпадает: "
+            f"ожидался {stored.content_hash}, получен {actual_hash}"
         )
 
 

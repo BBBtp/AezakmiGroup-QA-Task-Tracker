@@ -199,4 +199,3 @@ Expected: no whitespace errors; only planned files changed.
 git add README.md docs/superpowers
 git commit -m "docs: describe qadb outbox operations"
 ```
-

@@ -141,4 +141,3 @@ Automated tests must prove:
 - A missing or hash-mismatched snapshot is never sent, ingested, or regenerated.
 - Snapshot cleanup waits for both Telegram and QADB completion.
 - Manual report paths do not create QADB outbox work.
-

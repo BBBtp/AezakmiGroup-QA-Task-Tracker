@@ -89,6 +89,11 @@ class AlwaysFailIngestor:
         raise TimeoutError("QADB is down")
 
 
+class FailingTaskService(TaskService):
+    def find_task_by_event_message(self, *args, **kwargs):
+        raise RuntimeError("task history is temporarily unavailable")
+
+
 class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -388,6 +393,36 @@ class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
             await self._wait_for_status(DoqaReportJobStatus.COMPLETED)
             self.assertEqual(service.calls, 0)
             self.assertEqual(len(self.bot.documents), 1)
+        finally:
+            await queue.close()
+
+    async def test_post_delivery_bookkeeping_error_does_not_resend_zip(self) -> None:
+        service = FakeReportService(self.archive, [None])
+        queue = DoqaReportQueue(
+            self.bot,  # type: ignore[arg-type]
+            self.session_factory,
+            service,  # type: ignore[arg-type]
+            retry_delays_seconds=(0,),
+            task_service=FailingTaskService(),
+        )
+        await queue.start()
+        try:
+            await queue.enqueue(
+                chat_id=1,
+                command_message_id=18,
+                target_message_id=5,
+                external_id=671,
+            )
+            for _ in range(100):
+                if not queue._running_job_ids:
+                    break
+                await asyncio.sleep(0.02)
+
+            with self.session_factory() as session:
+                job = session.scalar(select(DoqaReportJob))
+            self.assertEqual(job.status, DoqaReportJobStatus.COMPLETED)
+            self.assertEqual(len(self.bot.documents), 1)
+            self.assertFalse(self.bot.messages)
         finally:
             await queue.close()
 

@@ -74,7 +74,13 @@ class DoqaReportQueue:
             )
 
         for job_id in completed_job_ids:
-            await self._track_report_message(job_id)
+            try:
+                await self._track_report_message(job_id)
+            except Exception:
+                logging.exception(
+                    "Failed to recover DoQA report task history job_id=%s",
+                    job_id,
+                )
         for job_id in job_ids:
             self._spawn(job_id)
         if job_ids:
@@ -201,7 +207,7 @@ class DoqaReportQueue:
             try:
                 report: DoqaReportResult | StoredDoqaReport | None = None
                 if self.qadb_sync_queue is not None:
-                    report = self.qadb_sync_queue.load(job_id)
+                    report = await self.qadb_sync_queue.load(job_id)
                 if report is None:
                     result = await self.report_service.create_report(external_id)
                     report = result
@@ -227,11 +233,6 @@ class DoqaReportQueue:
                         current.last_error = None
                         current.next_attempt_at = None
                         session.commit()
-                await self._track_report_message(job_id)
-                await self._set_reaction(chat_id, reaction_message_id, REACTION_ZIP_SENT)
-                if self.qadb_sync_queue is not None:
-                    await self.qadb_sync_queue.report_completed(job_id)
-                return
             except Exception as error:
                 if _is_transient(error) and attempt < max_attempts:
                     retry_delay = self.retry_delays_seconds[
@@ -264,6 +265,36 @@ class DoqaReportQueue:
             finally:
                 if result is not None:
                     await asyncio.to_thread(self.report_service.cleanup, result)
+
+            await self._after_delivery(
+                job_id,
+                chat_id=chat_id,
+                reaction_message_id=reaction_message_id,
+            )
+            return
+
+    async def _after_delivery(
+        self,
+        job_id: int,
+        *,
+        chat_id: int,
+        reaction_message_id: int,
+    ) -> None:
+        try:
+            await self._track_report_message(job_id)
+        except Exception:
+            logging.exception("Failed to track delivered DoQA report job_id=%s", job_id)
+
+        await self._set_reaction(chat_id, reaction_message_id, REACTION_ZIP_SENT)
+
+        if self.qadb_sync_queue is not None:
+            try:
+                await self.qadb_sync_queue.report_completed(job_id)
+            except Exception:
+                logging.exception(
+                    "Failed to finish QADB outbox bookkeeping report_job_id=%s",
+                    job_id,
+                )
 
     async def _track_report_message(self, job_id: int) -> None:
         """Attach the bot's ZIP message to the task reply chain."""

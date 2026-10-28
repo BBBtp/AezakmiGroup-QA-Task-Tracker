@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,6 +101,19 @@ class RecordingIngestor:
         return {"report_id": f"{project_ref}-{run_id}"}
 
 
+class BlockingIngestor(RecordingIngestor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def ingest(self, archive_path: Path, project_ref: str, run_id: int) -> dict:
+        self.started.set()
+        if not self.release.wait(timeout=2):
+            raise TimeoutError("test did not release ingestion")
+        return super().ingest(archive_path, project_ref, run_id)
+
+
 class QadbSyncAsyncTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -188,11 +202,11 @@ class QadbSnapshotTests(QadbSyncAsyncTestCase):
 
         stored.archive_path.write_bytes(b"corrupted")
         with self.assertRaises(SnapshotIntegrityError):
-            queue.load(report_job_id)
+            await queue.load(report_job_id)
 
         stored.archive_path.unlink()
         with self.assertRaises(SnapshotIntegrityError):
-            queue.load(report_job_id)
+            await queue.load(report_job_id)
 
     async def test_snapshot_is_deleted_only_after_both_consumers_complete(self) -> None:
         source = self.root / "source.zip"
@@ -329,6 +343,121 @@ class QadbSyncWorkerTests(QadbSyncAsyncTestCase):
             )
         finally:
             await queue.close()
+
+    async def test_newer_snapshot_waits_for_older_unstaged_report_job(self) -> None:
+        old = self.root / "old.zip"
+        new = self.root / "new.zip"
+        old.write_bytes(b"old")
+        new.write_bytes(b"new")
+        old_report_job = self.add_report_job(33)
+        new_report_job = self.add_report_job(34)
+        ingestor = RecordingIngestor()
+        queue = QadbSyncQueue(
+            self.session_factory,
+            ingestor,  # type: ignore[arg-type]
+            self.outbox,
+            retry_delays_seconds=(0,),
+        )
+        new_stored = await queue.stage(new_report_job, self.result(new, run_id=441))
+
+        await queue.start()
+        try:
+            await asyncio.sleep(0.05)
+            self.assertFalse(ingestor.calls)
+
+            old_stored = await queue.stage(old_report_job, self.result(old, run_id=441))
+            await self.wait_for_status(old_stored.id, QadbSyncJobStatus.COMPLETED)
+            await self.wait_for_status(new_stored.id, QadbSyncJobStatus.COMPLETED)
+            self.assertEqual([call[0] for call in ingestor.calls], [b"old", b"new"])
+        finally:
+            await queue.close()
+
+    async def test_newer_snapshot_continues_when_older_unstaged_job_fails(self) -> None:
+        new = self.root / "new.zip"
+        new.write_bytes(b"new")
+        old_report_job = self.add_report_job(341)
+        new_report_job = self.add_report_job(342)
+        ingestor = RecordingIngestor()
+        queue = QadbSyncQueue(
+            self.session_factory,
+            ingestor,  # type: ignore[arg-type]
+            self.outbox,
+            retry_delays_seconds=(0,),
+        )
+        new_stored = await queue.stage(new_report_job, self.result(new, run_id=441))
+
+        await queue.start()
+        try:
+            await asyncio.sleep(0.05)
+            self.assertFalse(ingestor.calls)
+
+            with self.session_factory() as session:
+                old_job = session.get(DoqaReportJob, old_report_job)
+                old_job.status = DoqaReportJobStatus.FAILED
+                session.commit()
+
+            await self.wait_for_status(new_stored.id, QadbSyncJobStatus.COMPLETED)
+            self.assertEqual([call[0] for call in ingestor.calls], [b"new"])
+        finally:
+            await queue.close()
+
+    async def test_cleanup_error_does_not_stop_other_sync_jobs(self) -> None:
+        first = self.root / "first.zip"
+        second = self.root / "second.zip"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        first_report_job = self.add_report_job(35)
+        second_report_job = self.add_report_job(36)
+        ingestor = RecordingIngestor()
+        queue = QadbSyncQueue(
+            self.session_factory,
+            ingestor,  # type: ignore[arg-type]
+            self.outbox,
+            retry_delays_seconds=(0,),
+        )
+        first_stored = await queue.stage(first_report_job, self.result(first, run_id=441))
+        second_stored = await queue.stage(second_report_job, self.result(second, run_id=442))
+        with self.session_factory() as session:
+            for report_job_id in (first_report_job, second_report_job):
+                report_job = session.get(DoqaReportJob, report_job_id)
+                report_job.status = DoqaReportJobStatus.COMPLETED
+            session.commit()
+
+        with patch.object(Path, "unlink", side_effect=[OSError("disk failure"), None]):
+            await queue.start()
+            try:
+                await self.wait_for_status(first_stored.id, QadbSyncJobStatus.COMPLETED)
+                await self.wait_for_status(second_stored.id, QadbSyncJobStatus.COMPLETED)
+                self.assertEqual([call[0] for call in ingestor.calls], [b"first", b"second"])
+                self.assertIsNotNone(queue._worker)
+                self.assertFalse(queue._worker.done())
+            finally:
+                await queue.close()
+
+    async def test_close_waits_for_inflight_ingestion(self) -> None:
+        source = self.root / "source.zip"
+        source.write_bytes(b"blocking")
+        report_job_id = self.add_report_job(37)
+        ingestor = BlockingIngestor()
+        queue = QadbSyncQueue(
+            self.session_factory,
+            ingestor,  # type: ignore[arg-type]
+            self.outbox,
+            retry_delays_seconds=(0,),
+        )
+        stored = await queue.stage(report_job_id, self.result(source))
+        await queue.start()
+        self.assertTrue(await asyncio.to_thread(ingestor.started.wait, 1))
+
+        close_task = asyncio.create_task(queue.close())
+        await asyncio.sleep(0.05)
+        self.assertFalse(close_task.done())
+        ingestor.release.set()
+        await close_task
+
+        with self.session_factory() as session:
+            completed = session.get(QadbSyncJob, stored.id)
+            self.assertEqual(completed.status, QadbSyncJobStatus.COMPLETED)
 
     async def test_corrupted_snapshot_fails_without_calling_ingestor(self) -> None:
         source = self.root / "source.zip"
