@@ -89,7 +89,8 @@ PDF пользователю не отправляется и удаляется
 - `DOQA_REPORT_RETRY_DELAYS_SECONDS` — задержки автоматических повторов через запятую,
   по умолчанию `15,60,180`;
 - `DOQA_PDF_FONT_PATH` — необязательный путь к TTF-шрифту с кириллицей.
-- `QADB_URL` и `QADB_SERVICE_KEY` — адрес и service key QADB; задаются только вместе;
+- `QADB_URL`, `QADB_PROJECT_SLUG` и `QADB_SERVICE_KEY` — адрес Remote DB, slug проекта и
+  service key; задаются только вместе;
 - `QADB_OUTBOX_DIR` — постоянная директория точных ZIP-снимков, по умолчанию
   `task_tracker_data/qadb_outbox`;
 - `QADB_SYNC_RETRY_DELAYS_SECONDS` — интервалы фоновой синхронизации, по умолчанию

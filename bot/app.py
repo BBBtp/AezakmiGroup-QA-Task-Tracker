@@ -109,10 +109,11 @@ async def main() -> None:
             timeout_seconds=settings.doqa_api_timeout_seconds,
         )
         qadb_ingestor = None
-        if settings.qadb_url and settings.qadb_service_key:
+        if settings.qadb_url and settings.qadb_project_slug and settings.qadb_service_key:
             qadb_ingestor = QadbReportIngestor(
                 settings.qadb_url,
                 settings.qadb_service_key,
+                settings.qadb_project_slug,
                 report_timezone=settings.qadb_report_timezone,
                 timeout_seconds=settings.qadb_timeout_seconds,
             )

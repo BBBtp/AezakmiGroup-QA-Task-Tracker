@@ -38,12 +38,14 @@ class QadbReportIngestor:
         self,
         url: str,
         service_key: str,
+        project_slug: str,
         *,
         report_timezone: str = "+03:00",
         timeout_seconds: int = 60,
     ) -> None:
         self.url = url.rstrip("/")
         self.service_key = service_key
+        self.project_slug = urllib.parse.quote(project_slug.strip(), safe="")
         self.report_timezone = report_timezone
         self.timeout_seconds = timeout_seconds
 
@@ -150,31 +152,64 @@ class QadbReportIngestor:
         if prefer:
             headers["Prefer"] = prefer
         body = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
-        status, raw = self._request(method, f"/rest/v1/{table}", body=body, headers=headers, query=query)
+        status, raw = self._request(
+            method,
+            f"/api/data/{self.project_slug}/{urllib.parse.quote(table, safe='')}",
+            body=body,
+            headers=headers,
+            query=query,
+        )
         if status >= 300:
             raise QadbReportIngestError(
                 f"{method} {table} -> HTTP {status}: {raw[:500].decode('utf-8', 'replace')}"
             )
-        return json.loads(raw) if raw else None
+        response = json.loads(raw) if raw else None
+        if isinstance(response, dict) and isinstance(response.get("rows"), list):
+            return response["rows"]
+        return response
 
     def _ensure_bucket(self) -> None:
         status, raw = self._request(
+            "GET",
+            f"/api/storage/{self.project_slug}/bucket",
+        )
+        if status >= 300:
+            raise QadbReportIngestError(
+                f"Список бакетов недоступен: HTTP {status}: "
+                f"{raw[:300].decode('utf-8', 'replace')}"
+            )
+        try:
+            buckets = json.loads(raw) if raw else []
+        except json.JSONDecodeError as error:
+            raise QadbReportIngestError("QADB вернула некорректный список бакетов") from error
+        if isinstance(buckets, list) and any(
+            isinstance(bucket, dict) and bucket.get("name") == BUCKET for bucket in buckets
+        ):
+            return
+
+        status, raw = self._request(
             "POST",
-            "/storage/v1/bucket",
-            body=json.dumps({"id": BUCKET, "name": BUCKET, "public": False}).encode(),
+            f"/api/projects/{self.project_slug}/storage/buckets",
+            body=json.dumps({"name": BUCKET, "public": False}).encode(),
             headers={"Content-Type": "application/json"},
         )
-        if status < 300 or status == 409 or b"already exists" in raw.lower():
+        if status < 300 or status == 409:
             return
-        raise QadbReportIngestError(f"Бакет {BUCKET} недоступен: HTTP {status}")
+        raise QadbReportIngestError(
+            f"Не удалось создать бакет {BUCKET}: HTTP {status}: "
+            f"{raw[:300].decode('utf-8', 'replace')}"
+        )
 
     def _upload(self, path: str, data: bytes) -> None:
         quoted = urllib.parse.quote(path, safe="/")
         status, raw = self._request(
             "POST",
-            f"/storage/v1/object/{BUCKET}/{quoted}",
+            f"/api/storage/{self.project_slug}/object/{BUCKET}/{quoted}",
             body=data,
-            headers={"Content-Type": mimetypes.guess_type(path)[0] or "application/octet-stream", "x-upsert": "true"},
+            headers={
+                "Content-Type": mimetypes.guess_type(path)[0] or "application/octet-stream",
+                "x-upsert": "true",
+            },
         )
         if status >= 300:
             raise QadbReportIngestError(

@@ -38,6 +38,7 @@ class Settings:
     doqa_report_retry_delays_seconds: tuple[int, ...] = (15, 60, 180)
     doqa_pdf_font_path: Path | None = None
     qadb_url: str | None = None
+    qadb_project_slug: str | None = None
     qadb_service_key: str | None = None
     qadb_report_timezone: str = "+03:00"
     qadb_timeout_seconds: int = 60
@@ -112,6 +113,7 @@ def load_settings() -> Settings:
     configured_font_path = getenv("DOQA_PDF_FONT_PATH", "").strip()
     doqa_pdf_font_path = Path(configured_font_path) if configured_font_path else None
     qadb_url = getenv("QADB_URL", "").strip().rstrip("/") or None
+    qadb_project_slug = getenv("QADB_PROJECT_SLUG", "").strip() or None
     qadb_service_key = getenv("QADB_SERVICE_KEY", "").strip() or None
     qadb_report_timezone = getenv("QADB_REPORT_TZ", "+03:00").strip() or "+03:00"
     qadb_timeout_seconds = max(5, int(getenv("QADB_TIMEOUT_SECONDS", "60")))
@@ -165,12 +167,17 @@ def load_settings() -> Settings:
         raise ValueError("DOQA_SPACE_IDS must contain positive integers")
     if doqa_base_url and not doqa_space_ids:
         doqa_space_ids = (doqa_space_id,) if doqa_space_id is not None else ()
-    if bool(qadb_url) != bool(qadb_service_key):
-        raise ValueError("QADB_URL and QADB_SERVICE_KEY must be configured together")
+    qadb_values = (qadb_url, qadb_project_slug, qadb_service_key)
+    if any(qadb_values) and not all(qadb_values):
+        raise ValueError(
+            "QADB_URL, QADB_PROJECT_SLUG and QADB_SERVICE_KEY must be configured together"
+        )
     if qadb_url:
         parsed_qadb_url = urlparse(qadb_url)
         if parsed_qadb_url.scheme not in {"http", "https"} or not parsed_qadb_url.netloc:
             raise ValueError("QADB_URL must be an absolute HTTP(S) URL")
+    if qadb_project_slug and not re.fullmatch(r"[a-z][a-z0-9_]{1,30}", qadb_project_slug):
+        raise ValueError("QADB_PROJECT_SLUG has an invalid format")
 
     return Settings(
         bot_token=bot_token,
@@ -197,6 +204,7 @@ def load_settings() -> Settings:
         doqa_report_retry_delays_seconds=doqa_report_retry_delays_seconds,
         doqa_pdf_font_path=doqa_pdf_font_path,
         qadb_url=qadb_url,
+        qadb_project_slug=qadb_project_slug,
         qadb_service_key=qadb_service_key,
         qadb_report_timezone=qadb_report_timezone,
         qadb_timeout_seconds=qadb_timeout_seconds,
