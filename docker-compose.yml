@@ -26,6 +26,8 @@ services:
       - postgres
     env_file:
       - .env
+    volumes:
+      - task_tracker_data:/app/task_tracker_data
     expose:
       - "8080"
 
@@ -44,3 +46,4 @@ services:
 
 volumes:
   task_tracker_postgres:
+  task_tracker_data:

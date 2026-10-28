@@ -15,6 +15,7 @@ from bot.db.models import DoqaReportJob, DoqaReportJobStatus, TaskEventType
 from bot.integrations.doqa import DoqaApiError
 from bot.live_updates import LiveUpdateBroadcaster
 from bot.services.task_service import TaskService
+from bot.services.qadb_sync import QadbSyncQueue, SnapshotIntegrityError, StoredDoqaReport
 
 from .service import DoqaReportEmptyError, DoqaReportResult, DoqaReportService
 
@@ -38,6 +39,7 @@ class DoqaReportQueue:
         retry_delays_seconds: tuple[int, ...] = (15, 60, 180),
         task_service: TaskService | None = None,
         broadcaster: LiveUpdateBroadcaster | None = None,
+        qadb_sync_queue: QadbSyncQueue | None = None,
     ) -> None:
         self.bot = bot
         self.session_factory = session_factory
@@ -45,6 +47,7 @@ class DoqaReportQueue:
         self.retry_delays_seconds = retry_delays_seconds or (15, 60, 180)
         self.task_service = task_service or TaskService()
         self.broadcaster = broadcaster
+        self.qadb_sync_queue = qadb_sync_queue
         self._tasks: set[asyncio.Task[None]] = set()
         self._running_job_ids: set[int] = set()
         self._closed = False
@@ -196,11 +199,20 @@ class DoqaReportQueue:
 
             result: DoqaReportResult | None = None
             try:
-                result = await self.report_service.create_report(external_id)
+                report: DoqaReportResult | StoredDoqaReport | None = None
+                if self.qadb_sync_queue is not None:
+                    report = self.qadb_sync_queue.load(job_id)
+                if report is None:
+                    result = await self.report_service.create_report(external_id)
+                    report = result
+                    if self.qadb_sync_queue is not None:
+                        report = await self.qadb_sync_queue.stage(job_id, result)
+                        await asyncio.to_thread(self.report_service.cleanup, result)
+                        result = None
                 sent = await self.bot.send_document(
                     chat_id=chat_id,
-                    document=FSInputFile(result.archive_path),
-                    caption=_report_caption(result),
+                    document=FSInputFile(report.archive_path),
+                    caption=_report_caption(report),
                     reply_parameters=ReplyParameters(
                         message_id=target_message_id,
                         allow_sending_without_reply=True,
@@ -210,13 +222,15 @@ class DoqaReportQueue:
                     current = session.get(DoqaReportJob, job_id)
                     if current is not None:
                         current.status = DoqaReportJobStatus.COMPLETED
-                        current.run_id = result.run_id
+                        current.run_id = report.run_id
                         current.sent_message_id = sent.message_id
                         current.last_error = None
                         current.next_attempt_at = None
                         session.commit()
                 await self._track_report_message(job_id)
                 await self._set_reaction(chat_id, reaction_message_id, REACTION_ZIP_SENT)
+                if self.qadb_sync_queue is not None:
+                    await self.qadb_sync_queue.report_completed(job_id)
                 return
             except Exception as error:
                 if _is_transient(error) and attempt < max_attempts:
@@ -360,7 +374,7 @@ class DoqaReportQueue:
                 )
 
 
-def _report_caption(result: DoqaReportResult) -> str:
+def _report_caption(result: DoqaReportResult | StoredDoqaReport) -> str:
     return (
         f"<b>DoQA — ID {result.external_id}, прогон #{result.run_id}</b>\n"
         f"{html.escape(result.title)}\n\n"
@@ -373,6 +387,8 @@ def _report_caption(result: DoqaReportResult) -> str:
 
 def _is_transient(error: Exception) -> bool:
     if isinstance(error, DoqaReportEmptyError):
+        return False
+    if isinstance(error, SnapshotIntegrityError):
         return False
     if isinstance(error, DoqaApiError):
         return error.status is None or error.status >= 500

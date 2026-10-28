@@ -46,6 +46,14 @@ class DoqaReportJobStatus(str, Enum):
     FAILED = "failed"
 
 
+class QadbSyncJobStatus(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class CodexJobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -157,6 +165,50 @@ class DoqaReportJob(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     sent_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class QadbSyncJob(Base):
+    __tablename__ = "qadb_sync_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_job_id",
+            name="uq_qadb_sync_job_report_job",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_job_id: Mapped[int] = mapped_column(
+        ForeignKey("doqa_report_jobs.id"),
+        index=True,
+    )
+    project_ref: Mapped[str] = mapped_column(String(128), index=True)
+    run_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    run_url: Mapped[str] = mapped_column(Text)
+    test_count: Mapped[int] = mapped_column(Integer)
+    bug_count: Mapped[int] = mapped_column(Integer)
+    parsed_bug_count: Mapped[int] = mapped_column(Integer)
+    archive_path: Mapped[str] = mapped_column(String(1024))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[QadbSyncJobStatus] = mapped_column(
+        SqlEnum(QadbSyncJobStatus),
+        default=QadbSyncJobStatus.QUEUED,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -8,24 +8,40 @@ from types import SimpleNamespace
 
 from sqlalchemy import func, select
 
-from bot.db.models import DoqaReportJob, DoqaReportJobStatus, Task, TaskEvent, TaskEventType
+from bot.db.models import (
+    DoqaReportJob,
+    DoqaReportJobStatus,
+    QadbSyncJob,
+    QadbSyncJobStatus,
+    Task,
+    TaskEvent,
+    TaskEventType,
+)
 from bot.db.session import init_db
 from bot.services.doqa_report import DoqaReportEmptyError, DoqaReportResult
 from bot.services.doqa_report.queue import DoqaReportQueue
+from bot.services.qadb_sync import QadbSyncQueue
 from bot.services.task_service import TaskService
 
 
 class FakeBot:
-    def __init__(self) -> None:
+    def __init__(self, document_outcomes: list[Exception | None] | None = None) -> None:
         self.reactions: list[tuple[int, int, str]] = []
         self.documents: list[dict] = []
+        self.document_attempts: list[dict] = []
         self.messages: list[dict] = []
         self._message_id = 900
+        self.document_outcomes = document_outcomes or [None]
 
     async def set_message_reaction(self, *, chat_id, message_id, reaction):
         self.reactions.append((chat_id, message_id, reaction[0].emoji))
 
     async def send_document(self, **kwargs):
+        self.document_attempts.append(kwargs)
+        index = min(len(self.document_attempts) - 1, len(self.document_outcomes) - 1)
+        outcome = self.document_outcomes[index]
+        if outcome is not None:
+            raise outcome
         self.documents.append(kwargs)
         self._message_id += 1
         return SimpleNamespace(message_id=self._message_id)
@@ -62,6 +78,15 @@ class FakeReportService:
 
     def cleanup(self, result: DoqaReportResult) -> None:
         self.cleaned += 1
+
+
+class AlwaysFailIngestor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def ingest(self, archive_path: Path, project_ref: str, run_id: int):
+        self.calls += 1
+        raise TimeoutError("QADB is down")
 
 
 class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
@@ -250,6 +275,122 @@ class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await queue.close()
 
+    async def test_qadb_failure_does_not_block_zip_delivery(self) -> None:
+        service = FakeReportService(self.archive, [None])
+        ingestor = AlwaysFailIngestor()
+        sync_queue = QadbSyncQueue(
+            self.session_factory,
+            ingestor,  # type: ignore[arg-type]
+            Path(self.tempdir.name) / "outbox",
+            retry_delays_seconds=(1000,),
+        )
+        queue = DoqaReportQueue(
+            self.bot,  # type: ignore[arg-type]
+            self.session_factory,
+            service,  # type: ignore[arg-type]
+            retry_delays_seconds=(0,),
+            qadb_sync_queue=sync_queue,
+        )
+        await sync_queue.start()
+        await queue.start()
+        try:
+            await queue.enqueue(
+                chat_id=1,
+                command_message_id=15,
+                target_message_id=5,
+                external_id=671,
+            )
+            await self._wait_for_status(DoqaReportJobStatus.COMPLETED)
+            sync_job = await self._wait_for_sync_status(QadbSyncJobStatus.RETRYING)
+
+            self.assertEqual(len(self.bot.documents), 1)
+            self.assertFalse(self.bot.messages)
+            self.assertEqual(service.calls, 1)
+            self.assertEqual(sync_job.attempts, 1)
+            self.assertEqual(ingestor.calls, 1)
+        finally:
+            await queue.close()
+            await sync_queue.close()
+
+    async def test_telegram_retry_reuses_staged_snapshot_without_regeneration(self) -> None:
+        bot = FakeBot([TimeoutError("Telegram is down"), None])
+        service = FakeReportService(self.archive, [None])
+        sync_queue = QadbSyncQueue(
+            self.session_factory,
+            AlwaysFailIngestor(),  # type: ignore[arg-type]
+            Path(self.tempdir.name) / "outbox",
+            retry_delays_seconds=(1000,),
+        )
+        queue = DoqaReportQueue(
+            bot,  # type: ignore[arg-type]
+            self.session_factory,
+            service,  # type: ignore[arg-type]
+            retry_delays_seconds=(0,),
+            qadb_sync_queue=sync_queue,
+        )
+        await queue.start()
+        try:
+            await queue.enqueue(
+                chat_id=1,
+                command_message_id=16,
+                target_message_id=5,
+                external_id=671,
+            )
+            await self._wait_for_status(DoqaReportJobStatus.COMPLETED)
+
+            self.assertEqual(service.calls, 1)
+            self.assertEqual(service.cleaned, 1)
+            self.assertEqual(len(bot.document_attempts), 2)
+            first_path = Path(bot.document_attempts[0]["document"].path)
+            second_path = Path(bot.document_attempts[1]["document"].path)
+            self.assertEqual(first_path, second_path)
+            self.assertEqual(first_path.read_bytes(), b"PK\x03\x04")
+        finally:
+            await queue.close()
+
+    async def test_recovered_report_job_uses_existing_snapshot(self) -> None:
+        with self.session_factory() as session:
+            report_job = DoqaReportJob(
+                chat_id=1,
+                command_message_id=17,
+                reaction_message_id=17,
+                target_message_id=5,
+                external_id=671,
+                status=DoqaReportJobStatus.PROCESSING,
+                attempts=1,
+                max_attempts=2,
+            )
+            session.add(report_job)
+            session.commit()
+            session.refresh(report_job)
+            report_job_id = report_job.id
+
+        sync_queue = QadbSyncQueue(
+            self.session_factory,
+            AlwaysFailIngestor(),  # type: ignore[arg-type]
+            Path(self.tempdir.name) / "outbox",
+            retry_delays_seconds=(1000,),
+        )
+        seed_service = FakeReportService(self.archive, [None])
+        seed_result = await seed_service.create_report(671)
+        await sync_queue.stage(report_job_id, seed_result)
+        service = FakeReportService(self.archive, [AssertionError("must not regenerate")])
+        queue = DoqaReportQueue(
+            self.bot,  # type: ignore[arg-type]
+            self.session_factory,
+            service,  # type: ignore[arg-type]
+            retry_delays_seconds=(0,),
+            qadb_sync_queue=sync_queue,
+        )
+
+        await queue.start()
+        try:
+            await self._wait_for_status(DoqaReportJobStatus.COMPLETED)
+            self.assertEqual(service.calls, 0)
+            self.assertEqual(len(self.bot.documents), 1)
+        finally:
+            await queue.close()
+
     async def _wait_for_status(self, status: DoqaReportJobStatus) -> DoqaReportJob:
         for _ in range(100):
             with self.session_factory() as session:
@@ -258,3 +399,12 @@ class DoqaReportQueueTests(unittest.IsolatedAsyncioTestCase):
                     return job
             await asyncio.sleep(0.02)
         self.fail(f"Job did not reach status {status}")
+
+    async def _wait_for_sync_status(self, status: QadbSyncJobStatus) -> QadbSyncJob:
+        for _ in range(100):
+            with self.session_factory() as session:
+                job = session.scalar(select(QadbSyncJob).order_by(QadbSyncJob.id.desc()))
+                if job is not None and job.status == status:
+                    return job
+            await asyncio.sleep(0.02)
+        self.fail(f"QADB sync job did not reach status {status}")

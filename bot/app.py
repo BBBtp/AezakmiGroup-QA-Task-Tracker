@@ -22,6 +22,7 @@ from bot.integrations.qadb import QadbReportIngestor
 from bot.live_updates import LiveUpdateBroadcaster
 from bot.services.doqa_pdf.service import DoqaPdfService
 from bot.services.doqa_report import DoqaReportQueue, DoqaReportService
+from bot.services.qadb_sync import QadbSyncQueue
 from bot.services.parser.resolver import MessageParser
 from bot.services.report_service import ReportService
 from bot.services.task_service import TaskService
@@ -69,6 +70,7 @@ async def main() -> None:
         concurrency=settings.doqa_parser_concurrency,
     )
     doqa_report_queue: DoqaReportQueue | None = None
+    qadb_sync_queue: QadbSyncQueue | None = None
     manual_doqa_report_service: DoqaReportService | None = None
     with session_factory() as session:
         updated_tasks = task_service.backfill_existing_tasks(session)
@@ -114,6 +116,12 @@ async def main() -> None:
                 report_timezone=settings.qadb_report_timezone,
                 timeout_seconds=settings.qadb_timeout_seconds,
             )
+            qadb_sync_queue = QadbSyncQueue(
+                session_factory,
+                qadb_ingestor,
+                settings.qadb_outbox_dir,
+                retry_delays_seconds=settings.qadb_sync_retry_delays_seconds,
+            )
             logging.info("QADB report ingestion is enabled")
         else:
             logging.info("QADB report ingestion is disabled: settings are not configured")
@@ -123,7 +131,6 @@ async def main() -> None:
             settings.doqa_report_url_template,
             font_path=settings.doqa_pdf_font_path,
             concurrency=settings.doqa_parser_concurrency,
-            qadb_ingestor=qadb_ingestor,
             report_url_templates=report_url_templates,
         )
         manual_doqa_client = DoqaClient(
@@ -147,6 +154,7 @@ async def main() -> None:
             retry_delays_seconds=settings.doqa_report_retry_delays_seconds,
             task_service=task_service,
             broadcaster=broadcaster,
+            qadb_sync_queue=qadb_sync_queue,
         )
         dispatcher.include_router(
             create_doqa_reports_router(
@@ -196,6 +204,8 @@ async def main() -> None:
     else:
         logging.info("WEB_BASE_URL is not HTTPS, mini app menu button was not configured")
 
+    if qadb_sync_queue is not None:
+        await qadb_sync_queue.start()
     if doqa_report_queue is not None:
         await doqa_report_queue.start()
 
@@ -204,6 +214,8 @@ async def main() -> None:
     finally:
         if doqa_report_queue is not None:
             await doqa_report_queue.close()
+        if qadb_sync_queue is not None:
+            await qadb_sync_queue.close()
         await runner.cleanup()
 
 

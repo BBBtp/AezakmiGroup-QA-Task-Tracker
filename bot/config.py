@@ -41,6 +41,8 @@ class Settings:
     qadb_service_key: str | None = None
     qadb_report_timezone: str = "+03:00"
     qadb_timeout_seconds: int = 60
+    qadb_outbox_dir: Path = Path("task_tracker_data/qadb_outbox")
+    qadb_sync_retry_delays_seconds: tuple[int, ...] = (15, 60, 300, 900, 3600)
     codex_worker_token: str | None = None
     codex_allowed_user_ids: tuple[int, ...] = ()
     office_minio_endpoint: str | None = None
@@ -113,6 +115,18 @@ def load_settings() -> Settings:
     qadb_service_key = getenv("QADB_SERVICE_KEY", "").strip() or None
     qadb_report_timezone = getenv("QADB_REPORT_TZ", "+03:00").strip() or "+03:00"
     qadb_timeout_seconds = max(5, int(getenv("QADB_TIMEOUT_SECONDS", "60")))
+    qadb_outbox_dir = Path(
+        getenv("QADB_OUTBOX_DIR", "task_tracker_data/qadb_outbox").strip()
+        or "task_tracker_data/qadb_outbox"
+    )
+    qadb_sync_retry_delays_seconds = tuple(
+        max(1, int(value.strip()))
+        for value in getenv(
+            "QADB_SYNC_RETRY_DELAYS_SECONDS",
+            "15,60,300,900,3600",
+        ).split(",")
+        if value.strip()
+    ) or (15, 60, 300, 900, 3600)
     codex_worker_token = getenv("CODEX_WORKER_TOKEN", "").strip() or None
     codex_allowed_user_ids = tuple(
         int(value.strip())
@@ -186,6 +200,8 @@ def load_settings() -> Settings:
         qadb_service_key=qadb_service_key,
         qadb_report_timezone=qadb_report_timezone,
         qadb_timeout_seconds=qadb_timeout_seconds,
+        qadb_outbox_dir=qadb_outbox_dir,
+        qadb_sync_retry_delays_seconds=qadb_sync_retry_delays_seconds,
         codex_worker_token=codex_worker_token,
         codex_allowed_user_ids=codex_allowed_user_ids,
         office_minio_endpoint=office_minio_endpoint,
