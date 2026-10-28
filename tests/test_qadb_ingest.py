@@ -57,6 +57,34 @@ class RemoteDbProtocolIngestor(QadbReportIngestor):
         raise AssertionError(f"Unexpected request: {method} {path}")
 
 
+class PaginatedBugIngestor(QadbReportIngestor):
+    def __init__(self) -> None:
+        super().__init__("https://qadb.example/db", "secret", "qadb")
+        self.stored_ids = [f"bug-{number:05d}" for number in range(5001)]
+        self.get_queries: list[dict[str, str]] = []
+        self.delete_queries: list[dict[str, str]] = []
+
+    def _rest(self, method, table, *, payload=None, query=None, prefer=None):
+        if method == "GET" and table == "qa_bugs":
+            self.get_queries.append(dict(query))
+            start = 0
+            cursor = query.get("external_id")
+            if cursor:
+                last_id = cursor.removeprefix("gt.")
+                start = self.stored_ids.index(last_id) + 1
+            limit = int(query["limit"])
+            return [
+                {"external_id": external_id}
+                for external_id in self.stored_ids[start : start + limit]
+            ]
+        if method == "DELETE" and table == "qa_bugs":
+            self.delete_queries.append(dict(query))
+            return []
+        if method == "POST" and table == "qa_bugs":
+            return []
+        raise AssertionError(f"Unexpected request: {method} {table}")
+
+
 class QadbReportIngestorTests(unittest.TestCase):
     def _archive(self, directory: str) -> Path:
         archive_path = Path(directory) / "report.zip"
@@ -92,12 +120,26 @@ class QadbReportIngestorTests(unittest.TestCase):
             ])
             report_call = next(call for call in ingestor.rest_calls if call[1] == "qa_reports")
             self.assertEqual(report_call[2][0]["project_ref_raw"], "671")
+            self.assertIn("updated_at", report_call[2][0])
             bug_call = next(
                 call for call in ingestor.rest_calls
                 if call[0] == "POST" and call[1] == "qa_bugs"
             )
             self.assertEqual(bug_call[2][0]["bug_key"], "671:77")
             self.assertEqual(bug_call[2][0]["report_id"], "report-1")
+            self.assertEqual(bug_call[2][0]["updated_at"], report_call[2][0]["updated_at"])
+
+    def test_stored_bugs_are_read_with_stable_keyset_pagination(self) -> None:
+        ingestor = PaginatedBugIngestor()
+
+        ingestor._replace_bugs("report-1", [], "2026-10-28T12:00:00+00:00")
+
+        self.assertEqual(len(ingestor.get_queries), 2)
+        self.assertEqual(ingestor.get_queries[0]["order"], "external_id.asc")
+        self.assertEqual(ingestor.get_queries[0]["limit"], "5000")
+        self.assertNotIn("external_id", ingestor.get_queries[0])
+        self.assertEqual(ingestor.get_queries[1]["external_id"], "gt.bug-04999")
+        self.assertEqual(len(ingestor.delete_queries), 101)
 
     def test_remote_db_protocol_uses_project_scoped_data_and_storage_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

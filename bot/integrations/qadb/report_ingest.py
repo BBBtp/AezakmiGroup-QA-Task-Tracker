@@ -15,6 +15,7 @@ from typing import Any
 
 
 BUCKET = "qa-reports"
+DATA_PAGE_SIZE = 5000
 RETRIABLE_STATUS = {429, 500, 502, 503, 504}
 KNOWN_ARTIFACTS = (
     re.compile(r"^bugs\.json$", re.I),
@@ -55,6 +56,7 @@ class QadbReportIngestor:
         bugs = _parse_bugs(files, ref)
         report_at, time_source = _report_time(files, self.report_timezone)
         storage_path = f"{ref}/{run_id}"
+        updated_at = datetime.now(timezone.utc).isoformat()
 
         self._ensure_bucket()
         for name, data in sorted(files.items()):
@@ -72,6 +74,7 @@ class QadbReportIngestor:
             "index_md": _decode(files.get("INDEX.md")),
             "raw": json.loads(files["bugs.json"].decode("utf-8")),
             "content_hash": _content_hash(files),
+            "updated_at": updated_at,
         }
         saved = self._rest(
             "POST",
@@ -83,23 +86,28 @@ class QadbReportIngestor:
         if not saved:
             raise QadbReportIngestError("QADB не вернула сохранённый отчёт")
         report_id = saved[0]["id"]
-        self._replace_bugs(report_id, bugs)
+        self._replace_bugs(report_id, bugs, updated_at)
         return {"report_id": report_id, "bug_count": len(bugs), "storage_path": storage_path}
 
-    def _replace_bugs(self, report_id: str, bugs: list[dict[str, Any]]) -> None:
+    def _replace_bugs(
+        self,
+        report_id: str,
+        bugs: list[dict[str, Any]],
+        updated_at: str,
+    ) -> None:
         for start in range(0, len(bugs), 100):
             self._rest(
                 "POST",
                 "qa_bugs",
-                payload=[dict(bug, report_id=report_id) for bug in bugs[start : start + 100]],
+                payload=[
+                    dict(bug, report_id=report_id, updated_at=updated_at)
+                    for bug in bugs[start : start + 100]
+                ],
                 query={"on_conflict": "report_id,external_id"},
                 prefer="resolution=merge-duplicates,return=minimal",
             )
-        stored = self._rest(
-            "GET", "qa_bugs", query={"select": "external_id", "report_id": f"eq.{report_id}"}
-        ) or []
         fresh = {bug["external_id"] for bug in bugs}
-        stale = sorted({row["external_id"] for row in stored} - fresh)
+        stale = sorted(self._stored_bug_ids(report_id) - fresh)
         for start in range(0, len(stale), 50):
             values = ",".join(json.dumps(value) for value in stale[start : start + 50])
             self._rest(
@@ -107,6 +115,28 @@ class QadbReportIngestor:
                 "qa_bugs",
                 query={"report_id": f"eq.{report_id}", "external_id": f"in.({values})"},
             )
+
+    def _stored_bug_ids(self, report_id: str) -> set[str]:
+        stored: set[str] = set()
+        last_external_id: str | None = None
+        while True:
+            query = {
+                "select": "external_id",
+                "report_id": f"eq.{report_id}",
+                "order": "external_id.asc",
+                "limit": str(DATA_PAGE_SIZE),
+            }
+            if last_external_id is not None:
+                query["external_id"] = f"gt.{last_external_id}"
+            page = self._rest("GET", "qa_bugs", query=query) or []
+            page_ids = [str(row["external_id"]) for row in page]
+            stored.update(page_ids)
+            if len(page_ids) < DATA_PAGE_SIZE:
+                return stored
+            next_external_id = page_ids[-1]
+            if next_external_id == last_external_id:
+                raise QadbReportIngestError("QADB вернула повторяющуюся страницу qa_bugs")
+            last_external_id = next_external_id
 
     def _request(
         self,
